@@ -1,0 +1,146 @@
+# DiffSBDD: Structure-based Drug Design with Equivariant Diffusion Models
+
+## Dependencies
+
+- RDKit
+- PyTorch
+- BioPython
+- imageio
+- Scipy
+- wandb
+- torch-scatter
+- PyTorch Lightning
+- openbabel
+- QuickVina 2
+- MGLTools
+
+### Create a conda environment
+```bash
+conda activate sbdd-env
+conda install pytorch cudatoolkit=10.2 -c pytorch
+conda install -c conda-forge pytorch-lightning
+conda install -c conda-forge wandb
+conda install -c conda-forge rdkit
+conda install -c conda-forge biopython
+conda install -c conda-forge imageio
+conda install -c anaconda scipy
+conda install -c pyg pytorch-scatter
+conda install -c conda-forge openbabel
+```
+
+### QuickVina 2
+Similarly install QuickVina 2:
+```bash
+wget https://github.com/QVina/qvina/raw/master/bin/qvina2.1
+chmod +x qvina2.1 
+```
+
+We need MGLTools for preparing the receptor for docking (pdb -> pdbqt) but it can mess up your conda environment, so I recommend to make a new one:
+```bash
+conda create -n mgltools -c bioconda mgltools
+```
+
+## CrossDocked Benchmark
+
+### Data preparation
+Download and extract the dataset as described by the authors of Pocket2Mol: https://github.com/pengxingang/Pocket2Mol/tree/main/data
+
+Process the raw data using
+```bash
+python process_crossdock.py <crossdocked_dir> --no_H
+```
+
+### Baselines
+Copy molecules from the baseline methods to the same directory, unzip them, and run 
+```bash
+python data/prepare_crossdocked.py <crossdocked_dir>
+```
+to change the directory structure and file names to the format required by our evaluation pipeline.
+
+
+## Binding MOAD
+### Data preparation
+Download the dataset
+```bash
+wget http://www.bindingmoad.org/files/biou/every_part_a.zip
+wget http://www.bindingmoad.org/files/biou/every_part_b.zip
+wget http://www.bindingmoad.org/files/csv/every.csv
+
+unzip every_part_a.zip
+unzip every_part_b.zip
+```
+Process the raw data using
+``` bash
+python process_bindingmoad.py <bindingmoad_dir>
+```
+or, to suppress warnings,
+```bash
+python -W ignore process_bindingmoad.py <bindingmoad_dir>
+```
+
+## Training
+Starting a new training run:
+```bash
+python -u train.py --config <config>.yml
+```
+
+Resuming a previous run:
+```bash
+python -u train.py --config <config>.yml --resume <checkpoint>.ckpt
+```
+
+## Inference
+
+### Sample molecules for a given pocket
+To sample small molecules for a given pocket with a trained model use the following command:
+```bash
+python generate_ligands.py <checkpoint>.ckpt --pdbfile <pdb_file>.pdb --outdir <output_dir> --resi_list <list_of_pocket_residue_ids>
+```
+For example:
+```bash
+python generate_ligands.py last.ckpt --pdbfile 1abc.pdb --outdir results/ --resi_list A:1 A:2 A:3 A:4 A:5 A:6 A:7 
+```
+
+Optional flags:
+| Flag | Description |
+|------|-------------|
+| `--n_samples` | Number of sampled molecules |
+| `--all_frags` | Keep all disconnected fragments |
+| `--sanitize` | Sanitize molecules (invalid molecules will be removed if this flag is present) |
+| `--relax` | Relax generated structure in force field |
+| `--resamplings` | Inpainting parameter (doesn't apply if conditional model is used) |
+| `--jump_length` | Inpainting parameter (doesn't apply if conditional model is used) |
+
+### Sample molecules for all pockets in the test set
+`test.py` can be used to sample molecules for the entire testing set:
+```bash
+python test.py <checkpoint>.ckpt --test_dir <bindingmoad_dir>/processed_noH/test/ --outdir <output_dir> --fix_n_nodes
+```
+Using the optional `--fix_n_nodes` flag lets the model produce ligands with the same number of nodes as the original molecule. Other optional flags are identical to `generate_ligands.py`. 
+
+### Metrics
+For assessing basic molecular properties create an instance of the `MoleculeProperties` class and run its `evaluate` method:
+```python
+from analysis.metrics import MoleculeProperties
+mol_metrics = MoleculeProperties()
+all_qed, all_sa, all_logp, all_lipinski, per_pocket_diversity = \
+    mol_metrics.evaluate(pocket_mols)
+```
+`evaluate()` expects a list of lists where the inner list contains all RDKit molecules generated for one pocket.
+
+For computing docking scores, run QuickVina as described below. 
+
+### QuickVina2
+First, convert all protein PDB files to PDBQT files using MGLTools
+```bash
+conda activate mgltools
+cd analysis
+python docking_py27.py <bindingmoad_dir>/processed_noH/test/ <output_dir>
+cd ..
+conda deactivate
+```
+Then, compute QVina scores:
+```bash
+conda activate sbdd-env
+python analysis/docking.py --pdbqt_dir <docking_py27_outdir> --sdf_dir <test_outdir> --out_dir <qvina_outdir> --write_csv --write_dict
+```
