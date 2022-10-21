@@ -386,13 +386,15 @@ class ConditionalDDPM(EnVariationalDiffusion):
                                   "without given pocket.")
 
     @torch.no_grad()
-    def sample_given_pocket(self, pocket, num_nodes_lig, return_frames=1):
+    def sample_given_pocket(self, pocket, num_nodes_lig, return_frames=1,
+                            timesteps=None):
         """
         Draw samples from the generative model. Optionally, return intermediate
         states for visualization purposes.
         """
-        assert 0 < return_frames <= self.T
-        assert self.T % return_frames == 0
+        timesteps = self.T if timesteps is None else timesteps
+        assert 0 < return_frames <= timesteps
+        assert timesteps % return_frames == 0
 
         n_samples = len(pocket['size'])
         device = pocket['x'].device
@@ -423,19 +425,19 @@ class ConditionalDDPM(EnVariationalDiffusion):
                                  device=device)
 
         # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
-        for s in reversed(range(0, self.T)):
+        for s in reversed(range(0, timesteps)):
             s_array = torch.full((n_samples, 1), fill_value=s,
                                  device=z_lig.device)
             t_array = s_array + 1
-            s_array = s_array / self.T
-            t_array = t_array / self.T
+            s_array = s_array / timesteps
+            t_array = t_array / timesteps
 
             z_lig, xh_pocket = self.sample_p_zs_given_zt(
                 s_array, t_array, z_lig, xh_pocket, lig_mask, pocket['mask'])
 
             # save frame
-            if (s * return_frames) % self.T == 0:
-                idx = (s * return_frames) // self.T
+            if (s * return_frames) % timesteps == 0:
+                idx = (s * return_frames) // timesteps
                 out_lig[idx], out_pocket[idx] = \
                     self.unnormalize_z(z_lig, xh_pocket)
 
@@ -512,11 +514,12 @@ class SimpleConditionalDDPM(ConditionalDDPM):
             ligand, pocket, return_info)
 
     @torch.no_grad()
-    def sample_given_pocket(self, pocket, num_nodes_lig, return_frames=1):
+    def sample_given_pocket(self, pocket, num_nodes_lig, return_frames=1,
+                            timesteps=None):
 
         # Subtract pocket center of mass
         pocket_com = scatter_mean(pocket['x'], pocket['mask'], dim=0)
         pocket['x'] = pocket['x'] - pocket_com[pocket['mask']]
 
         return super(SimpleConditionalDDPM, self).sample_given_pocket(
-            pocket, num_nodes_lig, return_frames)
+            pocket, num_nodes_lig, return_frames, timesteps)

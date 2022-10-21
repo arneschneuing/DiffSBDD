@@ -6,6 +6,7 @@ import warnings
 import torch
 import pytorch_lightning as pl
 import yaml
+import numpy as np
 
 from lightning_modules import LigandPocketDDPM
 
@@ -62,6 +63,8 @@ if __name__ == "__main__":
     args = merge_args_and_yaml(args, config)
 
     out_dir = Path(args.logdir, args.run_name)
+    histogram_file = Path(args.datadir, 'size_distribution.npy')
+    histogram = np.load(histogram_file).tolist()
     pl_module = LigandPocketDDPM(
         outdir=out_dir,
         dataset=args.dataset,
@@ -81,6 +84,7 @@ if __name__ == "__main__":
         auxiliary_loss=args.auxiliary_loss,
         loss_params=args.loss_params,
         mode=args.mode,
+        node_histogram=histogram,
         pocket_representation=args.pocket_representation
     )
 

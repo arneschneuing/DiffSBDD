@@ -575,13 +575,14 @@ class EnVariationalDiffusion(nn.Module):
 
     @torch.no_grad()
     def sample(self, n_samples, num_nodes_lig, num_nodes_pocket,
-               return_frames=1, device='cpu'):
+               return_frames=1, timesteps=None, device='cpu'):
         """
         Draw samples from the generative model. Optionally, return intermediate
         states for visualization purposes.
         """
-        assert 0 < return_frames <= self.T
-        assert self.T % return_frames == 0
+        timesteps = self.T if timesteps is None else timesteps
+        assert 0 < return_frames <= timesteps
+        assert timesteps % return_frames == 0
 
         lig_mask = utils.num_nodes_to_batch_mask(n_samples, num_nodes_lig,
                                                  device)
@@ -604,19 +605,19 @@ class EnVariationalDiffusion(nn.Module):
                                  device=z_pocket.device)
 
         # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
-        for s in reversed(range(0, self.T)):
+        for s in reversed(range(0, timesteps)):
             s_array = torch.full((n_samples, 1), fill_value=s,
                                  device=z_lig.device)
             t_array = s_array + 1
-            s_array = s_array / self.T
-            t_array = t_array / self.T
+            s_array = s_array / timesteps
+            t_array = t_array / timesteps
 
             z_lig, z_pocket = self.sample_p_zs_given_zt(
                 s_array, t_array, z_lig, z_pocket, lig_mask, pocket_mask)
 
             # save frame
-            if (s * return_frames) % self.T == 0:
-                idx = (s * return_frames) // self.T
+            if (s * return_frames) % timesteps == 0:
+                idx = (s * return_frames) // timesteps
                 out_lig[idx], out_pocket[idx] = \
                     self.unnormalize_z(z_lig, z_pocket)
 
@@ -645,13 +646,13 @@ class EnVariationalDiffusion(nn.Module):
         # remove frame dimension if only the final molecule is returned
         return out_lig.squeeze(0), out_pocket.squeeze(0), lig_mask, pocket_mask
 
-    def get_repaint_schedule(self, resamplings, jump_length):
+    def get_repaint_schedule(self, resamplings, jump_length, timesteps):
         """ Each integer in the schedule list describes how many denoising steps
         need to be applied before jumping back """
         repaint_schedule = []
         curr_t = 0
-        while curr_t < self.T:
-            if curr_t + jump_length < self.T:
+        while curr_t < timesteps:
+            if curr_t + jump_length < timesteps:
                 if len(repaint_schedule) > 0:
                     repaint_schedule[-1] += jump_length
                     repaint_schedule.extend([jump_length] * (resamplings - 1))
@@ -659,7 +660,7 @@ class EnVariationalDiffusion(nn.Module):
                     repaint_schedule.extend([jump_length] * resamplings)
                 curr_t += jump_length
             else:
-                residual = (self.T - curr_t)
+                residual = (timesteps - curr_t)
                 if len(repaint_schedule) > 0:
                     repaint_schedule[-1] += residual
                 else:
@@ -670,7 +671,7 @@ class EnVariationalDiffusion(nn.Module):
 
     @torch.no_grad()
     def inpaint(self, ligand, pocket, lig_fixed, pocket_fixed, resamplings=1,
-                jump_length=1, return_frames=1):
+                jump_length=1, return_frames=1, timesteps=None):
         """
         Draw samples from the generative model while fixing parts of the input.
         Optionally, return intermediate states for visualization purposes.
@@ -680,8 +681,9 @@ class EnVariationalDiffusion(nn.Module):
         Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
         Recognition. 2022.
         """
-        assert 0 < return_frames <= self.T
-        assert self.T % return_frames == 0
+        timesteps = self.T if timesteps is None else timesteps
+        assert 0 < return_frames <= timesteps
+        assert timesteps % return_frames == 0
         assert jump_length == 1 or return_frames == 1, \
             "Chain visualization is only implemented for jump_length=1"
 
@@ -720,15 +722,15 @@ class EnVariationalDiffusion(nn.Module):
 
         # Iteratively sample according to a pre-defined schedule
         schedule = self.get_repaint_schedule(resamplings, jump_length)
-        s = self.T - 1
+        s = timesteps - 1
         for i, n_denoise_steps in enumerate(schedule):
             for j in range(n_denoise_steps):
                 # Denoise one time step: t -> s
                 s_array = torch.full((n_samples, 1), fill_value=s,
                                      device=z_lig.device)
                 t_array = s_array + 1
-                s_array = s_array / self.T
-                t_array = t_array / self.T
+                s_array = s_array / timesteps
+                t_array = t_array / timesteps
 
                 # sample known nodes from the input
                 gamma_s = self.inflate_batch_array(self.gamma(s_array),
@@ -776,8 +778,8 @@ class EnVariationalDiffusion(nn.Module):
 
                 # save frame at the end of a resample cycle
                 if n_denoise_steps > jump_length or i == len(schedule) - 1:
-                    if (s * return_frames) % self.T == 0:
-                        idx = (s * return_frames) // self.T
+                    if (s * return_frames) % timesteps == 0:
+                        idx = (s * return_frames) // timesteps
                         out_lig[idx], out_pocket[idx] = \
                             self.unnormalize_z(z_lig, z_pocket)
 
@@ -787,7 +789,7 @@ class EnVariationalDiffusion(nn.Module):
                     t = s + jump_length
                     t_array = torch.full((n_samples, 1), fill_value=t,
                                          device=z_lig.device)
-                    t_array = t_array / self.T
+                    t_array = t_array / timesteps
 
                     gamma_s = self.inflate_batch_array(self.gamma(s_array),
                                                        ligand['x'])

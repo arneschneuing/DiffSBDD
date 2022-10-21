@@ -48,6 +48,7 @@ class LigandPocketDDPM(pl.LightningModule):
             auxiliary_loss,
             loss_params,
             mode,
+            node_histogram,
             pocket_representation='CA',
     ):
         super(LigandPocketDDPM, self).__init__()
@@ -119,7 +120,7 @@ class LigandPocketDDPM(pl.LightningModule):
             residue_nf=self.aa_nf,
             n_dims=self.x_dims,
             joint_nf=egnn_params.joint_nf,
-            device=egnn_params.device,
+            device=egnn_params.device if torch.cuda.is_available() else 'cpu',
             hidden_nf=egnn_params.hidden_nf,
             act_fn=torch.nn.SiLU(),
             n_layers=egnn_params.n_layers,
@@ -134,11 +135,6 @@ class LigandPocketDDPM(pl.LightningModule):
             update_pocket_coords=(self.mode == 'joint')
         )
 
-        histogram_file = Path(self.datadir, 'size_distribution.npy')
-        if histogram_file.exists():
-            histogram = np.load(histogram_file).tolist()
-        else:
-            histogram = self.dataset_info['n_nodes']
         self.ddpm = ddpm_models[self.mode](
                 dynamics=net_dynamics,
                 atom_nf=self.atom_nf,
@@ -149,7 +145,7 @@ class LigandPocketDDPM(pl.LightningModule):
                 noise_precision=diffusion_params.diffusion_noise_precision,
                 loss_type=diffusion_params.diffusion_loss_type,
                 norm_values=diffusion_params.normalize_factors,
-                size_histogram=histogram,
+                size_histogram=node_histogram,
             )
 
         self.auxiliary_loss = auxiliary_loss
@@ -690,7 +686,7 @@ class LigandPocketDDPM(pl.LightningModule):
 
     def generate_ligands(self, pdb_file, pocket_ids, n_samples,
                          num_nodes_lig=None, sanitize=False, largest_frag=False,
-                         relax_iter=0, **kwargs):
+                         relax_iter=0, timesteps=None, **kwargs):
         """
         Generate ligands given a pocket
         Args:
@@ -702,6 +698,7 @@ class LigandPocketDDPM(pl.LightningModule):
             sanitize: whether to sanitize molecules or not
             largest_frag: only return the largest fragment
             relax_iter: number of force field optimization steps
+            timesteps: number of denoising steps, use training value if None
             kwargs: additional inpainting parameters
         Returns:
             list of molecules
@@ -712,25 +709,35 @@ class LigandPocketDDPM(pl.LightningModule):
         residues = [
             pdb_struct[x.split(':')[0]][(' ', int(x.split(':')[1]), ' ')]
             for x in pocket_ids]
-        pocket_ca = torch.tensor(
-            [res['CA'].get_coord() for res in residues], device=self.device,
-            dtype=FLOAT_TYPE)
-        pocket_types = torch.tensor(
-            [self.pocket_type_encoder[three_to_one(res.get_resname())]
-             for res in residues], device=self.device)
+        if self.pocket_representation == 'CA':
+            pocket_coord = torch.tensor(
+                [res['CA'].get_coord() for res in residues], device=self.device,
+                dtype=FLOAT_TYPE)
+            pocket_types = torch.tensor(
+                [self.pocket_type_encoder[three_to_one(res.get_resname())]
+                 for res in residues], device=self.device)
+        else:
+            pocket_atoms = [a for res in residues for a in res.get_atoms()
+                            if (a.element.capitalize() in self.pocket_type_encoder or a.element != 'H')]
+            pocket_coord = torch.tensor([a.get_coord() for a in pocket_atoms],
+                                        device=self.device, dtype=FLOAT_TYPE)
+            pocket_types = torch.tensor(
+                [self.pocket_type_encoder[a.element.capitalize()]
+                 for a in pocket_atoms], device=self.device)
+
         pocket_one_hot = F.one_hot(
             pocket_types, num_classes=len(self.pocket_type_encoder)
         )
 
-        pocket_size = torch.tensor([len(pocket_ca)] * n_samples,
+        pocket_size = torch.tensor([len(pocket_coord)] * n_samples,
                                    device=self.device, dtype=INT_TYPE)
         pocket_mask = torch.repeat_interleave(
             torch.arange(n_samples, device=self.device, dtype=INT_TYPE),
-            len(pocket_ca)
+            len(pocket_coord)
         )
 
         pocket = {
-            'x': pocket_ca.repeat(n_samples, 1),
+            'x': pocket_coord.repeat(n_samples, 1),
             'one_hot': pocket_one_hot.repeat(n_samples, 1),
             'size': pocket_size,
             'mask': pocket_mask
@@ -764,12 +771,14 @@ class LigandPocketDDPM(pl.LightningModule):
                                            device=self.device)
 
             xh_lig, xh_pocket, lig_mask, pocket_mask = self.ddpm.inpaint(
-                ligand, pocket, lig_mask_fixed, pocket_mask_fixed, **kwargs)
+                ligand, pocket, lig_mask_fixed, pocket_mask_fixed,
+                timesteps=timesteps, **kwargs)
 
         # Use conditional generation
         elif type(self.ddpm) == ConditionalDDPM:
             xh_lig, xh_pocket, lig_mask, pocket_mask = \
-                self.ddpm.sample_given_pocket(pocket, num_nodes_lig)
+                self.ddpm.sample_given_pocket(pocket, num_nodes_lig,
+                                              timesteps=timesteps)
 
         else:
             raise NotImplementedError

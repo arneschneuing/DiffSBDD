@@ -20,6 +20,7 @@ if __name__ == "__main__":
     parser.add_argument('--relax', action='store_true')
     parser.add_argument('--resamplings', type=int, default=1)
     parser.add_argument('--jump_length', type=int, default=1)
+    parser.add_argument('--timesteps', type=int, default=None)
     args = parser.parse_args()
 
     pdb_id = Path(args.pdbfile).stem
@@ -41,7 +42,8 @@ if __name__ == "__main__":
         args.pdbfile, args.resi_list, args.n_samples, num_nodes_lig,
         args.sanitize, largest_frag=not args.all_frags,
         relax_iter=(200 if args.relax else 0),
-        resamplings=args.resamplings, jump_length=args.jump_length)
+        resamplings=args.resamplings, jump_length=args.jump_length,
+        timesteps=args.timesteps)
 
     # Make SDF files
     utils.write_sdf_file(Path(args.outdir, f'{pdb_id}_mol.sdf'), molecules)
