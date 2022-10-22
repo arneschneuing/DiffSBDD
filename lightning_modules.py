@@ -684,15 +684,18 @@ class LigandPocketDDPM(pl.LightningModule):
                       name='/chain', batch_mask=mask_flat)
         visualize_chain(str(outdir), self.dataset_info, wandb=wandb)
 
-    def generate_ligands(self, pdb_file, pocket_ids, n_samples,
-                         num_nodes_lig=None, sanitize=False, largest_frag=False,
-                         relax_iter=0, timesteps=None, **kwargs):
+    def generate_ligands(self, pdb_file, n_samples, pocket_ids=None,
+                         ref_ligand=None, num_nodes_lig=None, sanitize=False,
+                         largest_frag=False, relax_iter=0, timesteps=None,
+                         **kwargs):
         """
         Generate ligands given a pocket
         Args:
             pdb_file: PDB filename
-            pocket_ids: list of pocket residues in <chain>:<resi> format
             n_samples: number of samples
+            pocket_ids: list of pocket residues in <chain>:<resi> format
+            ref_ligand: alternative way of defining the pocket based on a
+                reference ligand given in <chain>:<resi> format
             num_nodes_lig: number of ligand nodes for each sample (list of
                 integers), sampled randomly if 'None'
             sanitize: whether to sanitize molecules or not
@@ -704,23 +707,33 @@ class LigandPocketDDPM(pl.LightningModule):
             list of molecules
         """
 
+        assert (pocket_ids is None) ^ (ref_ligand is None)
+
         # Load PDB
         pdb_struct = PDBParser(QUIET=True).get_structure('', pdb_file)[0]
-        residues = [
-            pdb_struct[x.split(':')[0]][(' ', int(x.split(':')[1]), ' ')]
-            for x in pocket_ids]
+        if pocket_ids is not None:
+            # define pocket with list of residues
+            residues = [
+                pdb_struct[x.split(':')[0]][(' ', int(x.split(':')[1]), ' ')]
+                for x in pocket_ids]
+
+        else:
+            # define pocket with reference ligand
+            residues = utils.get_pocket_from_ligand(pdb_struct, ref_ligand)
+
         if self.pocket_representation == 'CA':
-            pocket_coord = torch.tensor(
-                [res['CA'].get_coord() for res in residues], device=self.device,
-                dtype=FLOAT_TYPE)
+            pocket_coord = torch.tensor(np.array(
+                [res['CA'].get_coord() for res in residues]),
+                device=self.device, dtype=FLOAT_TYPE)
             pocket_types = torch.tensor(
                 [self.pocket_type_encoder[three_to_one(res.get_resname())]
                  for res in residues], device=self.device)
         else:
             pocket_atoms = [a for res in residues for a in res.get_atoms()
                             if (a.element.capitalize() in self.pocket_type_encoder or a.element != 'H')]
-            pocket_coord = torch.tensor([a.get_coord() for a in pocket_atoms],
-                                        device=self.device, dtype=FLOAT_TYPE)
+            pocket_coord = torch.tensor(np.array(
+                [a.get_coord() for a in pocket_atoms]),
+                device=self.device, dtype=FLOAT_TYPE)
             pocket_types = torch.tensor(
                 [self.pocket_type_encoder[a.element.capitalize()]
                  for a in pocket_atoms], device=self.device)

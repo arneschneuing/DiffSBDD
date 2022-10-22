@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from rdkit import Chem
 import networkx as nx
 from networkx.algorithms import isomorphism
+from Bio.PDB.Polypeptide import is_aa
 
 
 class Queue():
@@ -90,6 +91,32 @@ def residues_to_atoms(x_ca, dataset_info):
         num_classes=len(dataset_info['atom_encoder'])
     ).repeat(*x_ca.shape[:-1], 1)
     return x, one_hot
+
+
+def get_residue_with_resi(pdb_chain, resi):
+    res = [x for x in pdb_chain.get_residues() if x.id[1] == resi]
+    assert len(res) == 1
+    return res[0]
+
+
+def get_pocket_from_ligand(pdb_model, ligand_id, dist_cutoff=8.0):
+    chain, resi = ligand_id.split(':')
+    ligand = get_residue_with_resi(pdb_model[chain], int(resi))
+    ligand_coords = torch.from_numpy(
+        np.array([a.get_coord() for a in ligand.get_atoms()]))
+
+    pocket_residues = []
+    for residue in pdb_model.get_residues():
+        if residue.id[1] == resi:
+            continue  # skip ligand itself
+
+        res_coords = torch.from_numpy(
+            np.array([a.get_coord() for a in residue.get_atoms()]))
+        if is_aa(residue.get_resname(), standard=True) \
+                and torch.cdist(res_coords, ligand_coords).min() < dist_cutoff:
+            pocket_residues.append(residue)
+
+    return pocket_residues
 
 
 def batch_to_list(data, batch_mask):

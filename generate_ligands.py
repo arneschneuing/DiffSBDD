@@ -11,7 +11,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('checkpoint', type=Path)
     parser.add_argument('--pdbfile', type=str)
-    parser.add_argument('--resi_list', type=str, nargs='+')
+    parser.add_argument('--resi_list', type=str, nargs='+', default=None)
+    parser.add_argument('--ref_ligand', type=str, default=None)
     parser.add_argument('--outdir', type=Path)
     parser.add_argument('--n_samples', type=int, default=20)
     parser.add_argument('--num_nodes_lig', type=int, default=None)
@@ -39,8 +40,8 @@ if __name__ == "__main__":
         num_nodes_lig = None
 
     molecules = model.generate_ligands(
-        args.pdbfile, args.resi_list, args.n_samples, num_nodes_lig,
-        args.sanitize, largest_frag=not args.all_frags,
+        args.pdbfile, args.n_samples, args.resi_list, args.ref_ligand,
+        num_nodes_lig, args.sanitize, largest_frag=not args.all_frags,
         relax_iter=(200 if args.relax else 0),
         resamplings=args.resamplings, jump_length=args.jump_length,
         timesteps=args.timesteps)

@@ -105,8 +105,9 @@ if __name__ == "__main__":
 
                 # Turn all filters off first
                 mols_batch = model.generate_ligands(
-                    pdb_file, resi_list, args.batch_size, num_nodes_lig_inflated,
-                    sanitize=False, largest_frag=False, relax_iter=0,
+                    pdb_file, args.batch_size, resi_list,
+                    num_nodes_lig=num_nodes_lig_inflated, sanitize=False,
+                    largest_frag=False, relax_iter=0,
                     resamplings=args.resamplings, jump_length=args.jump_length)
 
                 all_molecules.extend(mols_batch)

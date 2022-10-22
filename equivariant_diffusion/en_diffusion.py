@@ -721,7 +721,7 @@ class EnVariationalDiffusion(nn.Module):
                                  device=z_pocket.device)
 
         # Iteratively sample according to a pre-defined schedule
-        schedule = self.get_repaint_schedule(resamplings, jump_length)
+        schedule = self.get_repaint_schedule(resamplings, jump_length, timesteps)
         s = timesteps - 1
         for i, n_denoise_steps in enumerate(schedule):
             for j in range(n_denoise_steps):
