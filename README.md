@@ -1,4 +1,10 @@
 # DiffSBDD: Structure-based Drug Design with Equivariant Diffusion Models
+Official implementation of **DiffSBDD**, an equivariant model for structure-based drug design, by Arne Schneuing, Yuanqi Du , Charles Harris, Arian Jamasb, Ilia Igashov, Weitao Du, Tom Blundell, Pietro Lió, Carla Gomes, Max Welling, Michael Bronstein & Bruno Correia.
+
+[![arXiv](https://img.shields.io/badge/arXiv-2210.13695-B31B1B.svg)](http://arxiv.org/abs/2210.13695)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/arneschneuing/DiffSBDD/blob/main/colab/DiffSBDD.ipynb)
+
+![](img/overview.png)
 
 ## Dependencies
 
@@ -16,6 +22,7 @@
 
 ### Create a conda environment
 ```bash
+conda create -n sbdd-env
 conda activate sbdd-env
 conda install pytorch cudatoolkit=10.2 -c pytorch
 conda install -c conda-forge pytorch-lightning
@@ -27,6 +34,21 @@ conda install -c anaconda scipy
 conda install -c pyg pytorch-scatter
 conda install -c conda-forge openbabel
 ```
+
+The code was tested with the following versions
+| Software          | Version   |
+|-------------------|-----------|
+| Python            | 3.10.4    |
+| CUDA              | 10.2.89   |
+| PyTorch           | 1.12.1    |
+| PyTorch Lightning | 1.7.4     |
+| WandB             | 0.13.1    |
+| RDKit             | 2022.03.2 |
+| BioPython         | 1.79      |
+| imageio           | 2.21.2    |
+| SciPy             | 1.7.3     |
+| PyTorch Scatter   | 2.0.9     |
+| OpenBabel         | 3.1.1     |
 
 ### QuickVina 2
 Similarly install QuickVina 2:
@@ -99,6 +121,10 @@ python generate_ligands.py <checkpoint>.ckpt --pdbfile <pdb_file>.pdb --outdir <
 For example:
 ```bash
 python generate_ligands.py last.ckpt --pdbfile 1abc.pdb --outdir results/ --resi_list A:1 A:2 A:3 A:4 A:5 A:6 A:7 
+```
+Alternatively, the binding pocket can also be specified based on a reference ligand in the same PDB file:
+```bash 
+python generate_ligands.py <checkpoint>.ckpt --pdbfile <pdb_file>.pdb --outdir <output_dir> --ref_ligand <chain>:<resi>
 ```
 
 Optional flags:
