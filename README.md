@@ -1,5 +1,6 @@
 # DiffSBDD: Structure-based Drug Design with Equivariant Diffusion Models
-Official implementation of **DiffSBDD**, an equivariant model for structure-based drug design, by Arne Schneuing, Yuanqi Du , Charles Harris, Arian Jamasb, Ilia Igashov, Weitao Du, Tom Blundell, Pietro Lió, Carla Gomes, Max Welling, Michael Bronstein & Bruno Correia.
+
+Official implementation of **DiffSBDD**, an equivariant model for structure-based drug design, by Arne Schneuing, Yuanqi Du, Charles Harris, Arian Jamasb, Ilia Igashov, Weitao Du, Tom Blundell, Pietro Lió, Carla Gomes, Max Welling, Michael Bronstein & Bruno Correia.
 
 [![arXiv](https://img.shields.io/badge/arXiv-2210.13695-B31B1B.svg)](http://arxiv.org/abs/2210.13695)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/arneschneuing/DiffSBDD/blob/main/colab/DiffSBDD.ipynb)
@@ -51,7 +52,7 @@ The code was tested with the following versions
 | OpenBabel         | 3.1.1     |
 
 ### QuickVina 2
-Similarly install QuickVina 2:
+For docking, install QuickVina 2:
 ```bash
 wget https://github.com/QVina/qvina/raw/master/bin/qvina2.1
 chmod +x qvina2.1 
@@ -71,14 +72,6 @@ Process the raw data using
 ```bash
 python process_crossdock.py <crossdocked_dir> --no_H
 ```
-
-### Baselines
-Copy molecules from the baseline methods to the same directory, unzip them, and run 
-```bash
-python data/prepare_crossdocked.py <crossdocked_dir>
-```
-to change the directory structure and file names to the format required by our evaluation pipeline.
-
 
 ## Binding MOAD
 ### Data preparation
@@ -165,7 +158,7 @@ python docking_py27.py <bindingmoad_dir>/processed_noH/test/ <output_dir>
 cd ..
 conda deactivate
 ```
-Then, compute QVina scores:
+Then, compute QuickVina scores:
 ```bash
 conda activate sbdd-env
 python analysis/docking.py --pdbqt_dir <docking_py27_outdir> --sdf_dir <test_outdir> --out_dir <qvina_outdir> --write_csv --write_dict
