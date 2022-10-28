@@ -1,32 +1,25 @@
 from pathlib import Path
 from time import time
-import random
-from collections import defaultdict
 import argparse
-import warnings
+import shutil
+import random
 
 import matplotlib.pyplot as plt 
 import seaborn as sns
 
-import pickle
 from tqdm import tqdm
 import numpy as np
 
 from Bio.PDB import PDBParser
 from Bio.PDB.Polypeptide import three_to_one, is_aa
-from Bio.PDB import PDBIO
-from openbabel import openbabel
 from rdkit import Chem
-from rdkit.Chem import QED
 from scipy.ndimage import gaussian_filter
 
 import torch
 
-from geometry_utils import get_bb_transform
-from analysis.molecule_builder import build_molecule, mol2smiles
+from analysis.molecule_builder import build_molecule
 import constants
 from constants import covalent_radii, dataset_params
-import utils
 
 dataset_info = dataset_params['crossdock_full']
 amino_acid_dict = dataset_info['aa_encoder']
@@ -47,7 +40,8 @@ def process_ligand_and_pocket(pdbfile, sdffile,
     # should stay so that the entire ligand can be removed from the dataset
     lig_atoms = [a.GetSymbol() for a in ligand.GetAtoms()
                  if (a.GetSymbol().capitalize() in atom_dict or a.element != 'H')]
-    lig_coords = np.array([list(ligand.GetConformer(0).GetAtomPosition(idx)) for idx in range(ligand.GetNumAtoms())])
+    lig_coords = np.array([list(ligand.GetConformer(0).GetAtomPosition(idx))
+                           for idx in range(ligand.GetNumAtoms())])
 
     try:
         lig_one_hot = np.stack([
@@ -87,8 +81,7 @@ def process_ligand_and_pocket(pdbfile, sdffile,
             raise KeyError(
                 f'{e} not in amino acid dict ({pdbfile}, {sdffile})')
         pocket_data = {
-            'pocket_coord': full_coords,
-            # 'pocket_quaternion': quaternion,
+            'pocket_ca': full_coords,
             'pocket_one_hot': pocket_one_hot,
             'pocket_ids': pocket_ids
         }
@@ -108,15 +101,14 @@ def process_ligand_and_pocket(pdbfile, sdffile,
             raise KeyError(
                 f'{e} not in atom dict ({pdbfile})')
         pocket_data = {
-            'pocket_coord': full_coords,
-            # 'pocket_quaternion': quaternion,
+            'pocket_ca': full_coords,
             'pocket_one_hot': pocket_one_hot,
             'pocket_ids': pocket_ids
         }
     return ligand_data, pocket_data
 
 
-def compute_smiles(positions, one_hot, mask, atom_decoder):
+def compute_smiles(positions, one_hot, mask):
     print("Computing SMILES ...")
 
     atom_types = np.argmax(one_hot, axis=-1)
@@ -131,7 +123,7 @@ def compute_smiles(positions, one_hot, mask, atom_decoder):
                 total=len(np.unique(mask)))
     for i, (pos, atom_type) in pbar:
         mol = build_molecule(pos, atom_type, dataset_info)
-        mol = mol2smiles(mol)
+        mol = Chem.MolToSmiles(mol)
         if mol is not None:
             mols_smiles.append(mol)
         pbar.set_description(f'{len(mols_smiles)}/{i + 1} successful')
@@ -256,7 +248,7 @@ if __name__ == '__main__':
     parser.add_argument('--random_seed', type=int, default=42)
     args = parser.parse_args()
 
-    datadir = args.basedir / 'crossdock/crossdocked_pocket10/'
+    datadir = args.basedir / 'crossdocked_pocket10/'
 
     # Make output directory
     if args.outdir is None:
@@ -269,10 +261,14 @@ if __name__ == '__main__':
     processed_dir.mkdir(exist_ok=True, parents=True)
 
     # Read data split
-    split_path = args.basedir / 'crossdock/split_by_name.pkl'
-    data_split = pickle.load(open(split_path, 'rb'))
-    # Note there is no validation set, copy test set to validation set
-    data_split['val'] = data_split['test']
+    split_path = Path(args.basedir, 'split_by_name.pt')
+    data_split = torch.load(split_path)
+
+    # There is no validation set, copy 300 training examples (the validation set
+    # is not very important in this application)
+    # Note: before we had a data leak but it should not matter too much as most
+    # metrics monitored during training are independent of the pockets
+    data_split['val'] = random.sample(data_split['train'], 300)
     
     n_train_before = len(data_split['train'])
     n_val_before = len(data_split['val'])
@@ -306,13 +302,12 @@ if __name__ == '__main__':
             sdffile = datadir / f'{ligand_fn}'
             pdbfile = datadir / f'{pocket_fn}'
 
-
             try:
                 struct_copy = PDBParser(QUIET=True).get_structure('', pdbfile)
             except:
                 num_failed += 1
                 failed_save.append((pocket_fn, ligand_fn))
-                print (failed_save)
+                print(failed_save[-1])
                 pbar.set_description(f'#failed: {num_failed}')
                 continue
 
@@ -331,40 +326,29 @@ if __name__ == '__main__':
             lig_coords.append(ligand_data['lig_coords'])
             lig_one_hot.append(ligand_data['lig_one_hot'])
             lig_mask.append(count * np.ones(len(ligand_data['lig_coords'])))
-            pocket_c_alpha.append(pocket_data['pocket_coord'])
+            pocket_c_alpha.append(pocket_data['pocket_ca'])
             pocket_one_hot.append(pocket_data['pocket_one_hot'])
-            pocket_mask.append(count * np.ones(len(pocket_data['pocket_coord'])))
-            count_protein.append(pocket_data['pocket_coord'].shape[0])
+            pocket_mask.append(count * np.ones(len(pocket_data['pocket_ca'])))
+            count_protein.append(pocket_data['pocket_ca'].shape[0])
             count_ligand.append(ligand_data['lig_coords'].shape[0])
-            count_total.append(pocket_data['pocket_coord'].shape[0]+ligand_data['lig_coords'].shape[0])
+            count_total.append(pocket_data['pocket_ca'].shape[0]+ligand_data['lig_coords'].shape[0])
             count += 1
 
             if split in {'val', 'test'}:
-                # Create SDF file
-                atom_types = [atom_decoder[np.argmax(i)] for i in ligand_data['lig_one_hot']]
-                xyz_file = Path(pdb_sdf_dir, 'tmp.xyz')
-                utils.write_xyz_file(ligand_data['lig_coords'], atom_types, xyz_file)
 
-                obConversion = openbabel.OBConversion()
-                obConversion.SetInAndOutFormats("xyz", "sdf")
-                mol = openbabel.OBMol()
-                obConversion.ReadFile(mol, str(xyz_file))
-                xyz_file.unlink()
+                # Copy PDB file
+                new_rec_name = Path(pdbfile).stem.replace('_', '-')
+                pdb_file_out = Path(pdb_sdf_dir, f"{new_rec_name}.pdb")
+                shutil.copy(pdbfile, pdb_file_out)
 
-                temp_name_pdb = pocket_fn.replace('_pocket10', '').replace('_', '-').replace('.pdb', '').split('/')[-1]
-                temp_name_sdf = ligand_fn.replace('_', '-').replace('.sdf', '').split('/')[-1]
-                name = f"{temp_name_pdb}_{temp_name_sdf}"
-                sdf_file = Path(pdb_sdf_dir, f'{name}.sdf')
-                obConversion.WriteFile(mol, str(sdf_file))
+                # Copy SDF file
+                new_lig_name = new_rec_name + '_' + Path(sdffile).stem.replace('_', '-')
+                sdf_file_out = Path(pdb_sdf_dir, f'{new_lig_name}.sdf')
+                shutil.copy(sdffile, sdf_file_out)
 
                 # specify pocket residues
-                with open(Path(pdb_sdf_dir, f'{name}.txt'), 'w') as f:
+                with open(Path(pdb_sdf_dir, f'{new_lig_name}.txt'), 'w') as f:
                     f.write(' '.join(pocket_data['pocket_ids']))
-                # create receptor PDB file
-                pdb_file_out = Path(pdb_sdf_dir, f"{temp_name_pdb}.pdb")
-                io = PDBIO()
-                io.set_structure(struct_copy)
-                io.save(str(pdb_file_out))
 
         lig_coords = np.concatenate(lig_coords, axis=0)
         lig_one_hot = np.concatenate(lig_one_hot, axis=0)
@@ -391,12 +375,12 @@ if __name__ == '__main__':
         pocket_one_hot = data['pocket_one_hot']
 
     # Compute SMILES for all training examples
-    train_smiles = compute_smiles(lig_coords, lig_one_hot, lig_mask,
-                                  atom_decoder=list(atom_dict.keys()))
+    train_smiles = compute_smiles(lig_coords, lig_one_hot, lig_mask)
     np.save(processed_dir / 'train_smiles.npy', train_smiles)
 
     # Joint histogram of number of ligand and pocket nodes
     n_nodes = get_n_nodes(lig_mask, pocket_mask, smooth_sigma=1.0)
+    np.save(Path(processed_dir, 'size_distribution.npy'), n_nodes)
 
     # Convert bond length dictionaries to arrays for batch processing
     bonds1, bonds2, bonds3 = get_bond_length_arrays(atom_dict)
@@ -432,15 +416,15 @@ if __name__ == '__main__':
     summary_string += f"'n_nodes': {n_nodes.tolist()}\n"
 
     sns.distplot(count_protein)
-    plt.savefig('protein_size_distribution.png')
+    plt.savefig(processed_dir / 'protein_size_distribution.png')
     plt.clf()
 
     sns.distplot(count_ligand)
-    plt.savefig('lig_size_distribution.png')
+    plt.savefig(processed_dir / 'lig_size_distribution.png')
     plt.clf()
 
     sns.distplot(count_total)
-    plt.savefig('total_size_distribution.png')
+    plt.savefig(processed_dir / 'total_size_distribution.png')
     plt.clf()
 
     # Write summary to text file
@@ -450,4 +434,4 @@ if __name__ == '__main__':
     # Print summary
     print(summary_string)
 
-    print (failed_save)
+    print(failed_save)
