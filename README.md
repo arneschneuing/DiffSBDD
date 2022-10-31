@@ -1,6 +1,6 @@
 # DiffSBDD: Structure-based Drug Design with Equivariant Diffusion Models
 
-Official implementation of **DiffSBDD**, an equivariant model for structure-based drug design, by Arne Schneuing, Yuanqi Du, Charles Harris, Arian Jamasb, Ilia Igashov, Weitao Du, Tom Blundell, Pietro Lió, Carla Gomes, Max Welling, Michael Bronstein & Bruno Correia.
+Official implementation of **DiffSBDD**, an equivariant model for structure-based drug design, by Arne Schneuing*, Yuanqi Du*, Charles Harris, Arian Jamasb, Ilia Igashov, Weitao Du, Tom Blundell, Pietro Lió, Carla Gomes, Max Welling, Michael Bronstein & Bruno Correia.
 
 [![arXiv](https://img.shields.io/badge/arXiv-2210.13695-B31B1B.svg)](http://arxiv.org/abs/2210.13695)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/arneschneuing/DiffSBDD/blob/main/colab/DiffSBDD.ipynb)
@@ -162,4 +162,14 @@ Then, compute QuickVina scores:
 ```bash
 conda activate sbdd-env
 python analysis/docking.py --pdbqt_dir <docking_py27_outdir> --sdf_dir <test_outdir> --out_dir <qvina_outdir> --write_csv --write_dict
+```
+
+### Citation
+```
+@article{schneuing2022structure,
+  title={Structure-based Drug Design with Equivariant Diffusion Models},
+  author={Schneuing, Arne and Du, Yuanqi and Harris, Charles and Jamasb, Arian and Igashov, Ilia and Du, Weitao and Blundell, Tom and Li{\'o}, Pietro and Gomes, Carla and Welling, Max and others},
+  journal={arXiv preprint arXiv:2210.13695},
+  year={2022}
+}
 ```
