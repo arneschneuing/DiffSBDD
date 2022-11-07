@@ -154,7 +154,7 @@ First, convert all protein PDB files to PDBQT files using MGLTools
 ```bash
 conda activate mgltools
 cd analysis
-python docking_py27.py <bindingmoad_dir>/processed_noH/test/ <output_dir>
+python docking_py27.py <bindingmoad_dir>/processed_noH/test/ <output_dir> bindingmoad
 cd ..
 conda deactivate
 ```
