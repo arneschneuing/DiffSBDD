@@ -91,7 +91,8 @@ class BasicMolecularMetrics(object):
 
     def compute_connectivity(self, valid):
         """ Consider molecule connected if its largest fragment contains at
-        least 50% of all atoms """
+        least x% of all atoms, where x is determined by
+        self.connectivity_thresh (defaults to 100%). """
         if len(valid) < 1:
             return [], 0.0
 
