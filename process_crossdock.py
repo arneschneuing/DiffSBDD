@@ -118,15 +118,19 @@ def compute_smiles(positions, one_hot, mask):
     atom_types = [torch.from_numpy(x) for x in np.split(atom_types, sections)]
 
     mols_smiles = []
-
+    fail = 0
     pbar = tqdm(enumerate(zip(positions, atom_types)),
                 total=len(np.unique(mask)))
     for i, (pos, atom_type) in pbar:
         mol = build_molecule(pos, atom_type, dataset_info)
-        mol = Chem.MolToSmiles(mol)
+        try:
+            mol = Chem.MolToSmiles(mol)
+        except:
+            fail += 1
+            continue
         if mol is not None:
             mols_smiles.append(mol)
-        pbar.set_description(f'{len(mols_smiles)}/{i + 1} successful')
+        pbar.set_description(f'{len(mols_smiles)}/{i + 1} successful, {len(mols_smiles)}/{fail} fail')
 
     return mols_smiles
 
