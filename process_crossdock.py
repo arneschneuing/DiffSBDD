@@ -253,6 +253,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     datadir = args.basedir / 'crossdocked_pocket10/'
+    
+    if args.ca_only:
+        dataset_info = dataset_params['crossdock']
 
     # Make output directory
     if args.outdir is None:
