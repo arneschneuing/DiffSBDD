@@ -168,7 +168,7 @@ python analysis/docking.py --pdbqt_dir <docking_py27_outdir> --sdf_dir <test_out
 ```
 @article{schneuing2022structure,
   title={Structure-based Drug Design with Equivariant Diffusion Models},
-  author={Schneuing, Arne and Du, Yuanqi and Harris, Charles and Jamasb, Arian and Igashov, Ilia and Du, Weitao and Blundell, Tom and Li{\'o}, Pietro and Gomes, Carla and Welling, Max and others},
+  author={Schneuing, Arne and Du, Yuanqi and Harris, Charles and Jamasb, Arian and Igashov, Ilia and Du, Weitao and Blundell, Tom and Li{\'o}, Pietro and Gomes, Carla and Welling, Max and Bronstein, Michael and Correia, Bruno},
   journal={arXiv preprint arXiv:2210.13695},
   year={2022}
 }
