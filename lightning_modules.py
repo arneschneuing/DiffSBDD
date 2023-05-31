@@ -806,6 +806,7 @@ class LigandPocketDDPM(pl.LightningModule):
             (pocket_com_before - pocket_com_after)[lig_mask]
 
         # Build mol objects
+        lig_mask = lig_mask.cpu()
         x = xh_lig[:, :self.x_dims].detach().cpu()
         atom_type = xh_lig[:, self.x_dims:].argmax(1).detach().cpu()
 
