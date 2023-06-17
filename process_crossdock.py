@@ -256,6 +256,9 @@ if __name__ == '__main__':
     
     if args.ca_only:
         dataset_info = dataset_params['crossdock']
+        amino_acid_dict = dataset_info['aa_encoder']
+        atom_dict = dataset_info['atom_encoder']
+        atom_decoder = dataset_info['atom_decoder']
 
     # Make output directory
     if args.outdir is None:
