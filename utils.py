@@ -77,18 +77,19 @@ def write_sdf_file(sdf_path, molecules):
     #        w.write(mol)
 
     w = Chem.SDWriter(str(sdf_path))
+    w.SetKekulize(False)
     for m in molecules:
         if m is not None:
             w.write(m)
 
-    print(f'Wrote SDF file to {sdf_path}')
+    # print(f'Wrote SDF file to {sdf_path}')
 
 
-def residues_to_atoms(x_ca, dataset_info):
+def residues_to_atoms(x_ca, atom_encoder):
     x = x_ca
     one_hot = F.one_hot(
-        torch.tensor(dataset_info['atom_encoder']['C'], device=x_ca.device),
-        num_classes=len(dataset_info['atom_encoder'])
+        torch.tensor(atom_encoder['C'], device=x_ca.device),
+        num_classes=len(atom_encoder)
     ).repeat(*x_ca.shape[:-1], 1)
     return x, one_hot
 
@@ -193,3 +194,33 @@ def calc_rmsd(mol_a, mol_b):
         print("More than one isomorphism found. Returning minimum RMSD.")
 
     return min(all_rmsds)
+
+
+class AppendVirtualNodes:
+    def __init__(self, max_ligand_size, atom_encoder, symbol):
+        self.max_ligand_size = max_ligand_size
+        self.atom_encoder = atom_encoder
+        self.vidx = atom_encoder[symbol]
+
+    def __call__(self, data):
+
+        n_virt = self.max_ligand_size - data['num_lig_atoms']
+        mu = data['lig_coords'].mean(0, keepdim=True)
+        sigma = data['lig_coords'].std(0).max()
+        virt_coords = torch.randn(n_virt, 3) * sigma + mu
+
+        # insert virtual atom column
+        one_hot = torch.cat((data['lig_one_hot'][:, :self.vidx],
+                            torch.zeros(data['num_lig_atoms'])[:, None],
+                            data['lig_one_hot'][:, self.vidx:]), dim=1)
+        virt_one_hot = torch.zeros(n_virt, len(self.atom_encoder))
+        virt_one_hot[:, self.vidx] = 1
+        virt_mask = torch.ones(n_virt) * data['lig_mask'][0]
+
+        data['lig_coords'] = torch.cat((data['lig_coords'], virt_coords))
+        data['lig_one_hot'] = torch.cat((one_hot, virt_one_hot))
+        data['num_lig_atoms'] = self.max_ligand_size
+        data['lig_mask'] = torch.cat((data['lig_mask'], virt_mask))
+        data['num_virtual_atoms'] = n_virt
+
+        return data

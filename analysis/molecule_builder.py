@@ -83,7 +83,17 @@ def make_mol_openbabel(positions, atom_types, atom_decoder):
         obConversion.WriteFile(ob_mol, tmp_file)
 
         # Read sdf file with RDKit
-        mol = Chem.SDMolSupplier(tmp_file, sanitize=False)[0]
+        tmp_mol = Chem.SDMolSupplier(tmp_file, sanitize=False)[0]
+
+    # Build new molecule. This is a workaround to remove radicals.
+    mol = Chem.RWMol()
+    for atom in tmp_mol.GetAtoms():
+        mol.AddAtom(Chem.Atom(atom.GetSymbol()))
+    mol.AddConformer(tmp_mol.GetConformer(0))
+
+    for bond in tmp_mol.GetBonds():
+        mol.AddBond(bond.GetBeginAtomIdx(), bond.GetEndAtomIdx(),
+                    bond.GetBondType())
 
     return mol
 

@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from Bio.PDB import PDBParser
 from Bio.PDB.Polypeptide import three_to_one, is_aa
-from Bio.PDB import PDBIO
+from Bio.PDB import PDBIO, Select
 from openbabel import openbabel
 from rdkit import Chem
 from rdkit.Chem import QED
@@ -18,6 +18,7 @@ from scipy.ndimage import gaussian_filter
 
 from geometry_utils import get_bb_transform
 from analysis.molecule_builder import build_molecule
+from analysis.metrics import rdmol_to_smiles
 import constants
 from constants import covalent_radii, dataset_params
 import utils
@@ -26,6 +27,11 @@ dataset_info = dataset_params['bindingmoad']
 amino_acid_dict = dataset_info['aa_encoder']
 atom_dict = dataset_info['atom_encoder']
 atom_decoder = dataset_info['atom_decoder']
+
+
+class Model0(Select):
+    def accept_model(self, model):
+        return model.id == 0
 
 
 def read_label_file(csv_path):
@@ -260,7 +266,7 @@ def process_ligand_and_pocket(pdb_struct, ligand_name, ligand_chain,
         'lig_one_hot': lig_one_hot,
     }
     pocket_data = {
-        'pocket_ca': pocket_coords,
+        'pocket_coords': pocket_coords,
         'pocket_one_hot': pocket_one_hot,
         'pocket_ids': pocket_ids,
     }
@@ -291,7 +297,7 @@ def compute_smiles(positions, one_hot, mask):
         except ValueError:
             continue
 
-        mol = Chem.MolToSmiles(mol)
+        mol = rdmol_to_smiles(mol)
         if mol is not None:
             mols_smiles.append(mol)
         pbar.set_description(f'{len(mols_smiles)}/{i + 1} successful')
@@ -389,14 +395,14 @@ def get_type_histograms(lig_one_hot, pocket_one_hot, atom_encoder, aa_encoder):
 
 
 def saveall(filename, pdb_and_mol_ids, lig_coords, lig_one_hot, lig_mask,
-            pocket_c_alpha, pocket_quaternion, pocket_one_hot, pocket_mask):
+            pocket_coords, pocket_quaternion, pocket_one_hot, pocket_mask):
 
     np.savez(filename,
         names=pdb_and_mol_ids,
         lig_coords=lig_coords,
         lig_one_hot=lig_one_hot,
         lig_mask=lig_mask,
-        pocket_c_alpha=pocket_c_alpha,
+        pocket_coords=pocket_coords,
         pocket_quaternion=pocket_quaternion,
         pocket_one_hot=pocket_one_hot,
         pocket_mask=pocket_mask
@@ -463,11 +469,11 @@ if __name__ == '__main__':
         lig_coords = []
         lig_one_hot = []
         lig_mask = []
-        pocket_c_alpha = []
-        # pocket_quaternion = []
+        pocket_coords = []
         pocket_one_hot = []
         pocket_mask = []
         pdb_and_mol_ids = []
+        receptors = []
         count = 0
 
         pdb_sdf_dir = processed_dir / split
@@ -513,16 +519,17 @@ if __name__ == '__main__':
                             continue
 
                         pdb_and_mol_ids.append(f"{p}_{m[0]}")
+                        receptors.append(pdbfile.name)
                         lig_coords.append(ligand_data['lig_coords'])
                         lig_one_hot.append(ligand_data['lig_one_hot'])
                         lig_mask.append(
                             count * np.ones(len(ligand_data['lig_coords'])))
-                        pocket_c_alpha.append(pocket_data['pocket_ca'])
+                        pocket_coords.append(pocket_data['pocket_coords'])
                         # pocket_quaternion.append(
                         #     pocket_data['pocket_quaternion'])
                         pocket_one_hot.append(pocket_data['pocket_one_hot'])
                         pocket_mask.append(
-                            count * np.ones(len(pocket_data['pocket_ca'])))
+                            count * np.ones(len(pocket_data['pocket_coords'])))
                         count += 1
 
                         pdb_successful.add(m[0])
@@ -530,6 +537,7 @@ if __name__ == '__main__':
 
                         # Save additional files for affinity analysis
                         if split in {'val', 'test'}:
+                        # if split in {'val', 'test', 'train'}:
                             # remove ligand from receptor
                             try:
                                 struct_copy[0][ligand_chain].detach_child((f'H_{ligand_name}', ligand_resi, ' '))
@@ -548,7 +556,7 @@ if __name__ == '__main__':
                             obConversion.ReadFile(mol, str(xyz_file))
                             xyz_file.unlink()
 
-                            name = f"{p}_{pdbfile.suffix[1:]}_{m[0]}"
+                            name = f"{p}-{pdbfile.suffix[1:]}_{m[0]}"
                             sdf_file = Path(pdb_sdf_dir, f'{name}.sdf')
                             obConversion.WriteFile(mol, str(sdf_file))
 
@@ -557,11 +565,12 @@ if __name__ == '__main__':
                                 f.write(' '.join(pocket_data['pocket_ids']))
 
                     if split in {'val', 'test'} and n_bio_successful > 0:
+                    # if split in {'val', 'test', 'train'} and n_bio_successful > 0:
                         # create receptor PDB file
-                        pdb_file_out = Path(pdb_sdf_dir, f'{p}_{pdbfile.suffix[1:]}.pdb')
+                        pdb_file_out = Path(pdb_sdf_dir, f'{p}-{pdbfile.suffix[1:]}.pdb')
                         io = PDBIO()
                         io.set_structure(struct_copy)
-                        io.save(str(pdb_file_out))
+                        io.save(str(pdb_file_out), select=Model0())
 
                 pbar.update(len(pair_dict[p]))
                 num_failed += (len(pair_dict[p]) - len(pdb_successful))
@@ -571,18 +580,15 @@ if __name__ == '__main__':
         lig_coords = np.concatenate(lig_coords, axis=0)
         lig_one_hot = np.concatenate(lig_one_hot, axis=0)
         lig_mask = np.concatenate(lig_mask, axis=0)
-        pocket_c_alpha = np.concatenate(pocket_c_alpha, axis=0)
-        # pocket_quaternion = np.concatenate(pocket_quaternion, axis=0)
+        pocket_coords = np.concatenate(pocket_coords, axis=0)
         pocket_one_hot = np.concatenate(pocket_one_hot, axis=0)
         pocket_mask = np.concatenate(pocket_mask, axis=0)
 
-        # saveall(processed_dir / f'{split}.npz', pdb_and_mol_ids, lig_coords,
-        #         lig_one_hot, lig_mask, pocket_c_alpha, pocket_quaternion,
-        #         pocket_one_hot, pocket_mask)
         np.savez(processed_dir / f'{split}.npz', names=pdb_and_mol_ids,
-                 lig_coords=lig_coords, lig_one_hot=lig_one_hot,
-                 lig_mask=lig_mask, pocket_c_alpha=pocket_c_alpha,
-                 pocket_one_hot=pocket_one_hot, pocket_mask=pocket_mask)
+                 receptors=receptors, lig_coords=lig_coords,
+                 lig_one_hot=lig_one_hot, lig_mask=lig_mask,
+                 pocket_coords=pocket_coords, pocket_one_hot=pocket_one_hot,
+                 pocket_mask=pocket_mask)
 
         n_samples_after[split] = len(pdb_and_mol_ids)
         print(f"Processing {split} set took {(time() - tic)/60.0:.2f} minutes")

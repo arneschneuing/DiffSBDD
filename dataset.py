@@ -1,11 +1,13 @@
-import os
+from itertools import accumulate
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
 
 class ProcessedLigandPocketDataset(Dataset):
-    def __init__(self, npz_path, center=True):
+    def __init__(self, npz_path, center=True, transform=None):
+
+        self.transform = transform
 
         with np.load(npz_path, allow_pickle=True) as f:
             data = {key: val for key, val in f.items()}
@@ -13,13 +15,10 @@ class ProcessedLigandPocketDataset(Dataset):
         # split data based on mask
         self.data = {}
         for (k, v) in data.items():
-            if k == 'names':
+            if k == 'names' or k == 'receptors':
                 self.data[k] = v
                 continue
 
-            # mask = data['lig_mask'] if 'lig' in k else data['pocket_mask']
-            # self.data[k] = [torch.from_numpy(v[mask == i])
-            #                 for i in np.unique(mask)]
             sections = np.where(np.diff(data['lig_mask']))[0] + 1 \
                 if 'lig' in k \
                 else np.where(np.diff(data['pocket_mask']))[0] + 1
@@ -36,25 +35,29 @@ class ProcessedLigandPocketDataset(Dataset):
         if center:
             for i in range(len(self.data['lig_coords'])):
                 mean = (self.data['lig_coords'][i].sum(0) +
-                        self.data['pocket_c_alpha'][i].sum(0)) / \
-                       (len(self.data['lig_coords'][i]) + len(self.data['pocket_c_alpha'][i]))
+                        self.data['pocket_coords'][i].sum(0)) / \
+                       (len(self.data['lig_coords'][i]) + len(self.data['pocket_coords'][i]))
                 self.data['lig_coords'][i] = self.data['lig_coords'][i] - mean
-                self.data['pocket_c_alpha'][i] = self.data['pocket_c_alpha'][i] - mean
+                self.data['pocket_coords'][i] = self.data['pocket_coords'][i] - mean
 
     def __len__(self):
         return len(self.data['names'])
 
     def __getitem__(self, idx):
-        return {key: val[idx] for key, val in self.data.items()}
+        data = {key: val[idx] for key, val in self.data.items()}
+        if self.transform is not None:
+            data = self.transform(data)
+        return data
 
     @staticmethod
     def collate_fn(batch):
         out = {}
         for prop in batch[0].keys():
 
-            if prop == 'names':
+            if prop == 'names' or prop == 'receptors':
                 out[prop] = [x[prop] for x in batch]
-            elif prop == 'num_lig_atoms' or prop == 'num_pocket_nodes':
+            elif prop == 'num_lig_atoms' or prop == 'num_pocket_nodes' \
+                    or prop == 'num_virtual_atoms':
                 out[prop] = torch.tensor([x[prop] for x in batch])
             elif 'mask' in prop:
                 # make sure indices in batch start at zero (needed for

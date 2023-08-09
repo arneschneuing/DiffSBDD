@@ -21,7 +21,8 @@ class EnVariationalDiffusion(nn.Module):
             n_dims: int, size_histogram: Dict,
             timesteps: int = 1000, parametrization='eps',
             noise_schedule='learned', noise_precision=1e-4,
-            loss_type='vlb', norm_values=(1., 1.), norm_biases=(None, 0.)):
+            loss_type='vlb', norm_values=(1., 1.), norm_biases=(None, 0.),
+            virtual_node_idx=None):
         super().__init__()
 
         assert loss_type in {'vlb', 'l2'}
@@ -57,6 +58,9 @@ class EnVariationalDiffusion(nn.Module):
 
         #  distribution of nodes
         self.size_distribution = DistributionNodes(size_histogram)
+
+        # indicate if virtual nodes are present
+        self.vnode_idx = virtual_node_idx
 
         if noise_schedule != 'learned':
             self.check_issues_norm_values()
@@ -692,6 +696,8 @@ class EnVariationalDiffusion(nn.Module):
         if len(pocket_fixed.size()) == 1:
             pocket_fixed = pocket_fixed.unsqueeze(1)
 
+        ligand, pocket = self.normalize(ligand, pocket)
+
         n_samples = len(ligand['size'])
         combined_mask = torch.cat((ligand['mask'], pocket['mask']))
         xh0_lig = torch.cat([ligand['x'], ligand['one_hot']], dim=1)
@@ -1168,16 +1174,12 @@ class PredefinedNoiseSchedule(torch.nn.Module):
         else:
             raise ValueError(noise_schedule)
 
-        print('alphas2', alphas2)
-
         sigmas2 = 1 - alphas2
 
         log_alphas2 = np.log(alphas2)
         log_sigmas2 = np.log(sigmas2)
 
         log_alphas2_to_sigmas2 = log_alphas2 - log_sigmas2
-
-        print('gamma', -log_alphas2_to_sigmas2)
 
         self.gamma = torch.nn.Parameter(
             torch.from_numpy(-log_alphas2_to_sigmas2).float(),

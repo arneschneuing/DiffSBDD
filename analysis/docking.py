@@ -1,12 +1,18 @@
 import os
 import re
+import tempfile
+import numpy as np
 import torch
 from pathlib import Path
 import argparse
-
 import pandas as pd
 from rdkit import Chem
 from tqdm import tqdm
+
+try:
+    import utils
+except ModuleNotFoundError as e:
+    print(e)
 
 
 def calculate_smina_score(pdb_file, sdf_file):
@@ -16,6 +22,32 @@ def calculate_smina_score(pdb_file, sdf_file):
     matches = re.findall(
         r"Affinity:[ ]+([+-]?[0-9]*[.]?[0-9]+)[ ]+\(kcal/mol\)", out)
     return [float(x) for x in matches]
+
+
+def smina_score(rdmols, receptor_file):
+    """
+    Calculate smina score
+    :param rdmols: List of RDKit molecules
+    :param receptor_file: Receptor pdb/pdbqt file or list of receptor files
+    :return: Smina score for each input molecule (list)
+    """
+
+    if isinstance(receptor_file, list):
+        scores = []
+        for mol, rec_file in zip(rdmols, receptor_file):
+            with tempfile.NamedTemporaryFile(suffix='.sdf') as tmp:
+                tmp_file = tmp.name
+                utils.write_sdf_file(tmp_file, [mol])
+                scores.extend(calculate_smina_score(rec_file, tmp_file))
+
+    # Use same receptor file for all molecules
+    else:
+        with tempfile.NamedTemporaryFile(suffix='.sdf') as tmp:
+            tmp_file = tmp.name
+            utils.write_sdf_file(tmp_file, rdmols)
+            scores = calculate_smina_score(receptor_file, tmp_file)
+
+    return scores
 
 
 def sdf_to_pdbqt(sdf_file, pdbqt_outfile, mol_id):
@@ -68,6 +100,13 @@ def calculate_qvina2_score(receptor_file, sdf_file, out_dir, size=20,
                 f'--exhaustiveness {exhaustiveness}'
             ).read()
 
+            # clean up
+            ligand_pdbqt_file.unlink()
+
+            if '-----+------------+----------+----------' not in out:
+                scores.append(np.nan)
+                continue
+
             out_split = out.splitlines()
             best_idx = out_split.index('-----+------------+----------+----------') + 1
             best_line = out_split[best_idx].split()
@@ -77,6 +116,9 @@ def calculate_qvina2_score(receptor_file, sdf_file, out_dir, size=20,
             out_pdbqt_file = Path(out_dir, ligand_name + '_out.pdbqt')
             if out_pdbqt_file.exists():
                 os.popen(f'obabel {out_pdbqt_file} -O {out_sdf_file}').read()
+
+                # clean up
+                out_pdbqt_file.unlink()
 
         if return_rdmol:
             rdmol = Chem.SDMolSupplier(str(out_sdf_file))[0]
@@ -103,6 +145,8 @@ if __name__ == '__main__':
 
     assert (args.sdf_dir is not None) ^ (args.sdf_files is not None)
 
+    args.out_dir.mkdir(exist_ok=True)
+
     results = {'receptor': [], 'ligand': [], 'scores': []}
     results_dict = {}
     sdf_files = list(args.sdf_dir.glob('[!.]*.sdf')) \
@@ -127,18 +171,23 @@ if __name__ == '__main__':
             receptor_name = ligand_name[:-4]
             receptor_file = Path(args.pdbqt_dir, receptor_name + '.pdbqt')
 
-        try:
-            scores, rdmols = calculate_qvina2_score(
-                receptor_file, sdf_file, args.out_dir, return_rdmol=True)
-        except (ValueError, AttributeError) as e:
-            print(e)
-            continue
+        # try:
+        scores, rdmols = calculate_qvina2_score(
+            receptor_file, sdf_file, args.out_dir, return_rdmol=True)
+        # except AttributeError as e:
+        #     print(e)
+        #     continue
         results['receptor'].append(str(receptor_file))
         results['ligand'].append(str(sdf_file))
         results['scores'].append(scores)
 
         if args.write_dict:
-            results_dict[receptor_name] = [scores, rdmols]
+            results_dict[ligand_name] = {
+                'receptor': str(receptor_file),
+                'ligand': str(sdf_file),
+                'scores': scores,
+                'rmdols': rdmols
+            }
 
     if args.write_csv:
         df = pd.DataFrame.from_dict(results)

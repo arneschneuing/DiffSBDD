@@ -4,7 +4,7 @@ import argparse
 import shutil
 import random
 
-import matplotlib.pyplot as plt 
+import matplotlib.pyplot as plt
 import seaborn as sns
 
 from tqdm import tqdm
@@ -18,13 +18,9 @@ from scipy.ndimage import gaussian_filter
 import torch
 
 from analysis.molecule_builder import build_molecule
+from analysis.metrics import rdmol_to_smiles
 import constants
 from constants import covalent_radii, dataset_params
-
-dataset_info = dataset_params['crossdock_full']
-amino_acid_dict = dataset_info['aa_encoder']
-atom_dict = dataset_info['atom_encoder']
-atom_decoder = dataset_info['atom_decoder']
 
 
 def process_ligand_and_pocket(pdbfile, sdffile,
@@ -57,7 +53,8 @@ def process_ligand_and_pocket(pdbfile, sdffile,
     for residue in pdb_struct[0].get_residues():
         res_coords = np.array([a.get_coord() for a in residue.get_atoms()])
         if is_aa(residue.get_resname(), standard=True) and \
-                (((res_coords[:, None, :] - lig_coords[None, :, :]) ** 2).sum(-1) ** 0.5).min() < dist_cutoff:
+                (((res_coords[:, None, :] - lig_coords[None, :, :]) ** 2).sum(
+                    -1) ** 0.5).min() < dist_cutoff:
             pocket_residues.append(residue)
 
     pocket_ids = [f'{res.parent.id}:{res.id[1]}' for res in pocket_residues]
@@ -73,7 +70,7 @@ def process_ligand_and_pocket(pdbfile, sdffile,
                 for atom in res.get_atoms():
                     if atom.name == 'CA':
                         pocket_one_hot.append(np.eye(1, len(amino_acid_dict),
-                            amino_acid_dict[three_to_one(res.get_resname())]).squeeze())
+                                                     amino_acid_dict[three_to_one(res.get_resname())]).squeeze())
                         full_coords.append(atom.coord)
             pocket_one_hot = np.stack(pocket_one_hot)
             full_coords = np.stack(full_coords)
@@ -81,27 +78,33 @@ def process_ligand_and_pocket(pdbfile, sdffile,
             raise KeyError(
                 f'{e} not in amino acid dict ({pdbfile}, {sdffile})')
         pocket_data = {
-            'pocket_ca': full_coords,
+            'pocket_coords': full_coords,
             'pocket_one_hot': pocket_one_hot,
             'pocket_ids': pocket_ids
         }
     else:
-        full_atoms = np.concatenate([np.array([atom.element for atom in res.get_atoms()]) for res in pocket_residues], axis=0)
-        full_coords = np.concatenate([np.array([atom.coord for atom in res.get_atoms()]) for res in pocket_residues], axis=0)
+        full_atoms = np.concatenate(
+            [np.array([atom.element for atom in res.get_atoms()])
+             for res in pocket_residues], axis=0)
+        full_coords = np.concatenate(
+            [np.array([atom.coord for atom in res.get_atoms()])
+             for res in pocket_residues], axis=0)
         try:
             pocket_one_hot = []
             for a in full_atoms:
                 if a in amino_acid_dict:
-                    atom = np.eye(1, len(amino_acid_dict), amino_acid_dict[a.capitalize()]).squeeze()
+                    atom = np.eye(1, len(amino_acid_dict),
+                                  amino_acid_dict[a.capitalize()]).squeeze()
                 elif a != 'H':
-                    atom = np.eye(1, len(amino_acid_dict), len(amino_acid_dict)).squeeze()
+                    atom = np.eye(1, len(amino_acid_dict),
+                                  len(amino_acid_dict)).squeeze()
                 pocket_one_hot.append(atom)
             pocket_one_hot = np.stack(pocket_one_hot)
         except KeyError as e:
             raise KeyError(
                 f'{e} not in atom dict ({pdbfile})')
         pocket_data = {
-            'pocket_ca': full_coords,
+            'pocket_coords': full_coords,
             'pocket_one_hot': pocket_one_hot,
             'pocket_ids': pocket_ids
         }
@@ -118,19 +121,15 @@ def compute_smiles(positions, one_hot, mask):
     atom_types = [torch.from_numpy(x) for x in np.split(atom_types, sections)]
 
     mols_smiles = []
-    fail = 0
+
     pbar = tqdm(enumerate(zip(positions, atom_types)),
                 total=len(np.unique(mask)))
     for i, (pos, atom_type) in pbar:
         mol = build_molecule(pos, atom_type, dataset_info)
-        try:
-            mol = Chem.MolToSmiles(mol)
-        except:
-            fail += 1
-            continue
+        mol = rdmol_to_smiles(mol)
         if mol is not None:
             mols_smiles.append(mol)
-        pbar.set_description(f'{len(mols_smiles)}/{i + 1} successful, {len(mols_smiles)}/{fail} fail')
+        pbar.set_description(f'{len(mols_smiles)}/{i + 1} successful')
 
     return mols_smiles
 
@@ -202,7 +201,7 @@ def get_lennard_jones_rm(atom_mapping):
             else:
                 if a1 == 'others' or a2 == 'others':
                     bond_len = 0
-                else: 
+                else:
                     # Replace missing values with sum of average covalent radii
                     bond_len = covalent_radii[a1] + covalent_radii[a2]
 
@@ -213,7 +212,6 @@ def get_lennard_jones_rm(atom_mapping):
 
 
 def get_type_histograms(lig_one_hot, pocket_one_hot, atom_encoder, aa_encoder):
-
     atom_decoder = list(atom_encoder.keys())
     atom_counts = {k: 0 for k in atom_encoder.keys()}
     for a in [atom_decoder[x] for x in lig_one_hot.argmax(1)]:
@@ -228,17 +226,16 @@ def get_type_histograms(lig_one_hot, pocket_one_hot, atom_encoder, aa_encoder):
 
 
 def saveall(filename, pdb_and_mol_ids, lig_coords, lig_one_hot, lig_mask,
-            pocket_c_alpha, pocket_one_hot, pocket_mask):
-
+            pocket_coords, pocket_one_hot, pocket_mask):
     np.savez(filename,
-        names=pdb_and_mol_ids,
-        lig_coords=lig_coords,
-        lig_one_hot=lig_one_hot,
-        lig_mask=lig_mask,
-        pocket_c_alpha=pocket_c_alpha,
-        pocket_one_hot=pocket_one_hot,
-        pocket_mask=pocket_mask
-    )
+             names=pdb_and_mol_ids,
+             lig_coords=lig_coords,
+             lig_one_hot=lig_one_hot,
+             lig_mask=lig_mask,
+             pocket_coords=pocket_coords,
+             pocket_one_hot=pocket_one_hot,
+             pocket_mask=pocket_mask
+             )
     return True
 
 
@@ -253,9 +250,14 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     datadir = args.basedir / 'crossdocked_pocket10/'
-    
+
     if args.ca_only:
         dataset_info = dataset_params['crossdock']
+    else:
+        dataset_info = dataset_params['crossdock_full']
+    amino_acid_dict = dataset_info['aa_encoder']
+    atom_dict = dataset_info['atom_encoder']
+    atom_decoder = dataset_info['atom_decoder']
 
     # Make output directory
     if args.outdir is None:
@@ -276,7 +278,7 @@ if __name__ == '__main__':
     # Note: before we had a data leak but it should not matter too much as most
     # metrics monitored during training are independent of the pockets
     data_split['val'] = random.sample(data_split['train'], 300)
-    
+
     n_train_before = len(data_split['train'])
     n_val_before = len(data_split['val'])
     n_test_before = len(data_split['test'])
@@ -288,7 +290,7 @@ if __name__ == '__main__':
         lig_coords = []
         lig_one_hot = []
         lig_mask = []
-        pocket_c_alpha = []
+        pocket_coords = []
         pocket_one_hot = []
         pocket_mask = []
         pdb_and_mol_ids = []
@@ -321,7 +323,8 @@ if __name__ == '__main__':
             try:
                 ligand_data, pocket_data = process_ligand_and_pocket(
                     pdbfile, sdffile,
-                    atom_dict=atom_dict, dist_cutoff=args.dist_cutoff, ca_only=args.ca_only)
+                    atom_dict=atom_dict, dist_cutoff=args.dist_cutoff,
+                    ca_only=args.ca_only)
             except (KeyError, AssertionError, FileNotFoundError, IndexError,
                     ValueError) as e:
                 print(type(e).__name__, e, pocket_fn, ligand_fn)
@@ -333,16 +336,17 @@ if __name__ == '__main__':
             lig_coords.append(ligand_data['lig_coords'])
             lig_one_hot.append(ligand_data['lig_one_hot'])
             lig_mask.append(count * np.ones(len(ligand_data['lig_coords'])))
-            pocket_c_alpha.append(pocket_data['pocket_ca'])
+            pocket_coords.append(pocket_data['pocket_coords'])
             pocket_one_hot.append(pocket_data['pocket_one_hot'])
-            pocket_mask.append(count * np.ones(len(pocket_data['pocket_ca'])))
-            count_protein.append(pocket_data['pocket_ca'].shape[0])
+            pocket_mask.append(
+                count * np.ones(len(pocket_data['pocket_coords'])))
+            count_protein.append(pocket_data['pocket_coords'].shape[0])
             count_ligand.append(ligand_data['lig_coords'].shape[0])
-            count_total.append(pocket_data['pocket_ca'].shape[0]+ligand_data['lig_coords'].shape[0])
+            count_total.append(pocket_data['pocket_coords'].shape[0] +
+                               ligand_data['lig_coords'].shape[0])
             count += 1
 
             if split in {'val', 'test'}:
-
                 # Copy PDB file
                 new_rec_name = Path(pdbfile).stem.replace('_', '-')
                 pdb_file_out = Path(pdb_sdf_dir, f"{new_rec_name}.pdb")
@@ -360,16 +364,16 @@ if __name__ == '__main__':
         lig_coords = np.concatenate(lig_coords, axis=0)
         lig_one_hot = np.concatenate(lig_one_hot, axis=0)
         lig_mask = np.concatenate(lig_mask, axis=0)
-        pocket_c_alpha = np.concatenate(pocket_c_alpha, axis=0)
+        pocket_coords = np.concatenate(pocket_coords, axis=0)
         pocket_one_hot = np.concatenate(pocket_one_hot, axis=0)
         pocket_mask = np.concatenate(pocket_mask, axis=0)
 
         saveall(processed_dir / f'{split}.npz', pdb_and_mol_ids, lig_coords,
-                lig_one_hot, lig_mask, pocket_c_alpha,
+                lig_one_hot, lig_mask, pocket_coords,
                 pocket_one_hot, pocket_mask)
 
         n_samples_after[split] = len(pdb_and_mol_ids)
-        print(f"Processing {split} set took {(time() - tic)/60.0:.2f} minutes")
+        print(f"Processing {split} set took {(time() - tic) / 60.0:.2f} minutes")
 
     # --------------------------------------------------------------------------
     # Compute statistics & additional information

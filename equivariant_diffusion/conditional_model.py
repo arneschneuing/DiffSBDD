@@ -72,8 +72,12 @@ class ConditionalDDPM(EnVariationalDiffusion):
         # Computes the error for the distribution
         # N(x | 1 / alpha_0 z_0 + sigma_0/alpha_0 eps_0, sigma_0 / alpha_0),
         # the weighting in the epsilon parametrization is exactly '1'.
+        squared_error = (eps_lig_x - net_lig_x) ** 2
+        if self.vnode_idx is not None:
+            # coordinates of virtual atoms should not contribute to the error
+            squared_error[ligand['one_hot'][:, self.vnode_idx].bool(), :self.n_dims] = 0
         log_p_x_given_z0_without_constants_ligand = -0.5 * (
-            self.sum_except_batch((eps_lig_x - net_lig_x) ** 2, ligand['mask'])
+            self.sum_except_batch(squared_error, ligand['mask'])
         )
 
         # Compute delta indicator masks.
@@ -203,6 +207,9 @@ class ConditionalDDPM(EnVariationalDiffusion):
         ligand, pocket = self.normalize(ligand, pocket)
 
         # Likelihood change due to normalization
+        # if self.vnode_idx is not None:
+        #     delta_log_px = self.delta_log_px(ligand['size'] - ligand['num_virtual_atoms'] + pocket['size'])
+        # else:
         delta_log_px = self.delta_log_px(ligand['size'])
 
         # Sample a timestep t for each example in batch
@@ -253,8 +260,11 @@ class ConditionalDDPM(EnVariationalDiffusion):
                                                   ligand['mask'])
 
         # Compute the L2 error.
-        error_t_lig = self.sum_except_batch((eps_t_lig - net_out_lig) ** 2,
-                                            ligand['mask'])
+        squared_error = (eps_t_lig - net_out_lig) ** 2
+        if self.vnode_idx is not None:
+            # coordinates of virtual atoms should not contribute to the error
+            squared_error[ligand['one_hot'][:, self.vnode_idx].bool(), :self.n_dims] = 0
+        error_t_lig = self.sum_except_batch(squared_error, ligand['mask'])
 
         # Compute weighting with SNR: (1 - SNR(s-t)) for epsilon parametrization
         SNR_weight = (1 - self.SNR(gamma_s - gamma_t)).squeeze(1)
@@ -318,6 +328,40 @@ class ConditionalDDPM(EnVariationalDiffusion):
                       neg_log_constants, kl_prior, log_pN,
                       t_int.squeeze(), xh_lig_hat)
         return (*loss_terms, info) if return_info else loss_terms
+    
+    def partially_noised_ligand(self, ligand, pocket, noising_steps):
+        """
+        Partially noises a ligand to be later denoised.
+        """
+        # Normalize data, take into account volume change in x.
+        ligand, pocket = self.normalize(ligand, pocket)
+
+        # Inflate timestep into an array
+        t_int = torch.ones(size=(ligand['size'].size(0), 1),
+            device=ligand['x'].device).float() * noising_steps
+
+        # Normalize t to [0, 1].
+        t = t_int / self.T
+
+        # Compute gamma_s and gamma_t via the network.
+        gamma_t = self.inflate_batch_array(self.gamma(t), ligand['x'])
+
+        # Concatenate x, and h[categorical].
+        xh0_lig = torch.cat([ligand['x'], ligand['one_hot']], dim=1)
+        xh0_pocket = torch.cat([pocket['x'], pocket['one_hot']], dim=1)
+
+        # Center the input nodes
+        xh0_lig[:, :self.n_dims], xh0_pocket[:, :self.n_dims] = \
+            self.remove_mean_batch(xh0_lig[:, :self.n_dims],
+                                   xh0_pocket[:, :self.n_dims],
+                                   ligand['mask'], pocket['mask'])
+
+        # Find noised representation
+        z_t_lig, xh_pocket, eps_t_lig = \
+            self.noised_representation(xh0_lig, xh0_pocket, ligand['mask'],
+                                       pocket['mask'], gamma_t)
+            
+        return z_t_lig, xh_pocket, eps_t_lig
 
     def xh_given_zt_and_epsilon(self, z_t, epsilon, gamma_t, batch_mask):
         """ Equation (7) in the EDM paper """
@@ -462,6 +506,140 @@ class ConditionalDDPM(EnVariationalDiffusion):
 
         # remove frame dimension if only the final molecule is returned
         return out_lig.squeeze(0), out_pocket.squeeze(0), lig_mask, \
+               pocket['mask']
+
+    @torch.no_grad()
+    def inpaint(self, ligand, pocket, lig_fixed, resamplings=1, return_frames=1,
+                timesteps=None, center='ligand'):
+        """
+        Draw samples from the generative model while fixing parts of the input.
+        Optionally, return intermediate states for visualization purposes.
+        Inspired by Algorithm 1 in:
+        Lugmayr, Andreas, et al.
+        "Repaint: Inpainting using denoising diffusion probabilistic models."
+        Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern
+        Recognition. 2022.
+        """
+        timesteps = self.T if timesteps is None else timesteps
+        assert 0 < return_frames <= timesteps
+        assert timesteps % return_frames == 0
+
+        if len(lig_fixed.size()) == 1:
+            lig_fixed = lig_fixed.unsqueeze(1)
+
+        n_samples = len(ligand['size'])
+        device = pocket['x'].device
+
+        # Normalize
+        ligand, pocket = self.normalize(ligand, pocket)
+
+        # xh0_pocket is the original pocket while xh_pocket might be a
+        # translated version of it
+        xh0_pocket = torch.cat([pocket['x'], pocket['one_hot']], dim=1)
+        com_pocket_0 = scatter_mean(pocket['x'], pocket['mask'], dim=0)
+        xh0_ligand = torch.cat([ligand['x'], ligand['one_hot']], dim=1)
+        xh_ligand = xh0_ligand.clone()
+
+        # Center initial system, subtract COM of known parts
+        if center == 'ligand':
+            mean_known = scatter_mean(ligand['x'][lig_fixed.bool().view(-1)],
+                                      ligand['mask'][lig_fixed.bool().view(-1)],
+                                      dim=0)
+        elif center == 'pocket':
+            mean_known = scatter_mean(pocket['x'], pocket['mask'], dim=0)
+        else:
+            raise NotImplementedError(
+                f"Centering option {center} not implemented")
+
+        # Sample from Normal distribution in the ligand center
+        mu_lig_x = mean_known
+        mu_lig_h = torch.zeros((n_samples, self.atom_nf), device=device)
+        mu_lig = torch.cat((mu_lig_x, mu_lig_h), dim=1)[ligand['mask']]
+        sigma = torch.ones_like(pocket['size']).unsqueeze(1)
+
+        z_lig, xh_pocket = self.sample_normal_zero_com(
+            mu_lig, xh0_pocket, sigma, ligand['mask'], pocket['mask'])
+
+        # Output tensors
+        out_lig = torch.zeros((return_frames,) + z_lig.size(),
+                              device=z_lig.device)
+        out_pocket = torch.zeros((return_frames,) + xh_pocket.size(),
+                                 device=device)
+
+        # Iteratively sample with resampling iterations
+        for s in reversed(range(0, timesteps)):
+
+            # resampling iterations
+            for u in range(resamplings):
+
+                # Denoise one time step: t -> s
+                s_array = torch.full((n_samples, 1), fill_value=s,
+                                     device=device)
+                t_array = s_array + 1
+                s_array = s_array / timesteps
+                t_array = t_array / timesteps
+
+                gamma_t = self.gamma(t_array)
+                gamma_s = self.gamma(s_array)
+
+                # sample inpainted part
+                z_lig_unknown, xh_pocket = self.sample_p_zs_given_zt(
+                    s_array, t_array, z_lig, xh_pocket, ligand['mask'],
+                    pocket['mask'])
+
+                # sample known nodes from the input
+                com_pocket = scatter_mean(xh_pocket[:, :self.n_dims],
+                                          pocket['mask'], dim=0)
+                xh_ligand[:, :self.n_dims] = \
+                    ligand['x'] + (com_pocket - com_pocket_0)[ligand['mask']]
+                z_lig_known = self.noised_representation(
+                    xh_ligand, xh_pocket, ligand['mask'], pocket['mask'],
+                    gamma_s)[0]
+
+                # move center of mass of the noised part to the center of mass
+                # of the corresponding denoised part before combining them
+                # -> the resulting system should be COM-free
+                com_noised = scatter_mean(
+                    z_lig_known[lig_fixed.bool().view(-1)][:, :self.n_dims],
+                    ligand['mask'][lig_fixed.bool().view(-1)], dim=0)
+                com_denoised = scatter_mean(
+                    z_lig_unknown[lig_fixed.bool().view(-1)][:, :self.n_dims],
+                    ligand['mask'][lig_fixed.bool().view(-1)], dim=0)
+                z_lig_known[:, :self.n_dims] = z_lig_known[:, :self.n_dims] + \
+                                               (com_denoised - com_noised)[
+                                                   ligand['mask']]
+
+                # combine
+                z_lig = z_lig_known * lig_fixed + z_lig_unknown * (
+                            1 - lig_fixed)
+
+                # if s == 0:  # don't resample in last time step
+                #     break
+
+                if u < resamplings - 1:
+                    # Noise the sample
+                    z_lig, _ = self.sample_p_zt_given_zs(
+                        z_lig, xh0_pocket, ligand['mask'], pocket['mask'],
+                        gamma_t, gamma_s)
+
+                # save frame at the end of a resampling cycle
+                if u == resamplings - 1:
+                    if (s * return_frames) % timesteps == 0:
+                        idx = (s * return_frames) // timesteps
+
+                        out_lig[idx], out_pocket[idx] = \
+                            self.unnormalize_z(z_lig, xh_pocket)
+
+        # Finally sample p(x, h | z_0).
+        x_lig, h_lig, x_pocket, h_pocket = self.sample_p_xh_given_z0(
+            z_lig, xh_pocket, ligand['mask'], pocket['mask'], n_samples)
+
+        # Overwrite last frame with the resulting x and h.
+        out_lig[0] = torch.cat([x_lig, h_lig], dim=1)
+        out_pocket[0] = torch.cat([x_pocket, h_pocket], dim=1)
+
+        # remove frame dimension if only the final molecule is returned
+        return out_lig.squeeze(0), out_pocket.squeeze(0), ligand['mask'], \
                pocket['mask']
 
     @classmethod

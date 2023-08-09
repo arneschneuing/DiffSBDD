@@ -12,7 +12,7 @@ from analysis.molecule_builder import process_molecule
 import utils
 
 MAXITER = 10
-MAXNTRIES = 3
+MAXNTRIES = 10
 
 
 if __name__ == "__main__":
@@ -25,10 +25,13 @@ if __name__ == "__main__":
     parser.add_argument('--all_frags', action='store_true')
     parser.add_argument('--sanitize', action='store_true')
     parser.add_argument('--relax', action='store_true')
-    parser.add_argument('--fix_n_nodes', action='store_true')
     parser.add_argument('--batch_size', type=int, default=120)
-    parser.add_argument('--resamplings', type=int, default=1)
+    parser.add_argument('--resamplings', type=int, default=10)
     parser.add_argument('--jump_length', type=int, default=1)
+    parser.add_argument('--timesteps', type=int, default=None)
+    parser.add_argument('--fix_n_nodes', action='store_true')
+    parser.add_argument('--n_nodes_bias', type=int, default=0)
+    parser.add_argument('--n_nodes_min', type=int, default=0)
     parser.add_argument('--skip_existing', action='store_true')
     args = parser.parse_args()
 
@@ -77,66 +80,70 @@ if __name__ == "__main__":
 
         for n_try in range(MAXNTRIES):
 
-            t_pocket_start = time()
-
-            with open(txt_file, 'r') as f:
-                resi_list = f.read().split()
-
-            if args.fix_n_nodes:
-                # some ligands (e.g. 6JWS_bio1_PT1:A:801) could not be read with sanitize=True
-                suppl = Chem.SDMolSupplier(str(sdf_file), sanitize=False)
-                num_nodes_lig = suppl[0].GetNumAtoms()
-            else:
-                num_nodes_lig = None
-
-            all_molecules = []
-            valid_molecules = []
-            processed_molecules = []  # only used as temporary variable
-            iter = 0
-            n_generated = 0
-            n_valid = 0
-            while len(valid_molecules) < args.n_samples:
-                iter += 1
-                if iter > MAXITER:
-                    raise RuntimeError('Maximum number of iterations has been exceeded.')
-
-                num_nodes_lig_inflated = None if num_nodes_lig is None else \
-                    torch.ones(args.batch_size, dtype=int) * num_nodes_lig
-
-                # Turn all filters off first
-                mols_batch = model.generate_ligands(
-                    pdb_file, args.batch_size, resi_list,
-                    num_nodes_lig=num_nodes_lig_inflated, sanitize=False,
-                    largest_frag=False, relax_iter=0,
-                    resamplings=args.resamplings, jump_length=args.jump_length)
-
-                all_molecules.extend(mols_batch)
-
-                # Filter to find valid molecules
-                mols_batch_processed = [
-                    process_molecule(m, sanitize=args.sanitize,
-                                     relax_iter=(200 if args.relax else 0),
-                                     largest_frag=not args.all_frags)
-                    for m in mols_batch
-                ]
-                processed_molecules.extend(mols_batch_processed)
-                valid_mols_batch = [m for m in mols_batch_processed if m is not None]
-
-                n_generated += args.batch_size
-                n_valid += len(valid_mols_batch)
-                valid_molecules.extend(
-                    valid_mols_batch[:min(len(valid_mols_batch),
-                                          args.n_samples - len(valid_molecules))]
-                )
-
-            # Reorder raw files
-            all_molecules = \
-                [all_molecules[i] for i, m in enumerate(processed_molecules)
-                 if m is not None] + \
-                [all_molecules[i] for i, m in enumerate(processed_molecules)
-                 if m is None]
-
             try:
+                t_pocket_start = time()
+
+                with open(txt_file, 'r') as f:
+                    resi_list = f.read().split()
+
+                if args.fix_n_nodes:
+                    # some ligands (e.g. 6JWS_bio1_PT1:A:801) could not be read with sanitize=True
+                    suppl = Chem.SDMolSupplier(str(sdf_file), sanitize=False)
+                    num_nodes_lig = suppl[0].GetNumAtoms()
+                else:
+                    num_nodes_lig = None
+
+                all_molecules = []
+                valid_molecules = []
+                processed_molecules = []  # only used as temporary variable
+                iter = 0
+                n_generated = 0
+                n_valid = 0
+                while len(valid_molecules) < args.n_samples:
+                    iter += 1
+                    if iter > MAXITER:
+                        raise RuntimeError('Maximum number of iterations has been exceeded.')
+
+                    num_nodes_lig_inflated = None if num_nodes_lig is None else \
+                        torch.ones(args.batch_size, dtype=int) * num_nodes_lig
+
+                    # Turn all filters off first
+                    mols_batch = model.generate_ligands(
+                        pdb_file, args.batch_size, resi_list,
+                        num_nodes_lig=num_nodes_lig_inflated,
+                        timesteps=args.timesteps, sanitize=False,
+                        largest_frag=False, relax_iter=0,
+                        n_nodes_bias=args.n_nodes_bias,
+                        n_nodes_min=args.n_nodes_min,
+                        resamplings=args.resamplings,
+                        jump_length=args.jump_length)
+
+                    all_molecules.extend(mols_batch)
+
+                    # Filter to find valid molecules
+                    mols_batch_processed = [
+                        process_molecule(m, sanitize=args.sanitize,
+                                         relax_iter=(200 if args.relax else 0),
+                                         largest_frag=not args.all_frags)
+                        for m in mols_batch
+                    ]
+                    processed_molecules.extend(mols_batch_processed)
+                    valid_mols_batch = [m for m in mols_batch_processed if m is not None]
+
+                    n_generated += args.batch_size
+                    n_valid += len(valid_mols_batch)
+                    valid_molecules.extend(valid_mols_batch)
+
+                # Remove excess molecules from list
+                valid_molecules = valid_molecules[:args.n_samples]
+
+                # Reorder raw files
+                all_molecules = \
+                    [all_molecules[i] for i, m in enumerate(processed_molecules)
+                     if m is not None] + \
+                    [all_molecules[i] for i, m in enumerate(processed_molecules)
+                     if m is None]
+
                 # Write SDF files
                 utils.write_sdf_file(sdf_out_file_raw, all_molecules)
                 utils.write_sdf_file(sdf_out_file_processed, valid_molecules)
@@ -154,9 +161,9 @@ if __name__ == "__main__":
 
                 break  # no more tries needed
 
-            except RuntimeError as e:
+            except (RuntimeError, ValueError) as e:
                 if n_try >= MAXNTRIES - 1:
-                    raise e
+                    raise RuntimeError("Maximum number of retries exceeded")
                 warnings.warn(f"Attempt {n_try + 1}/{MAXNTRIES} failed with "
                               f"error: '{e}'. Trying again...")
 

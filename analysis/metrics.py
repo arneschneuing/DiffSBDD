@@ -1,12 +1,11 @@
 import numpy as np
-from scipy.spatial.distance import cdist
 from tqdm import tqdm
 from rdkit import Chem, DataStructs
 from rdkit.Chem import Descriptors, Crippen, Lipinski, QED
 from analysis.SA_Score.sascorer import calculateScore
 
-from analysis.molecule_builder import get_bond_order_batch, build_molecule
-from constants import allowed_bonds
+from analysis.molecule_builder import build_molecule
+from copy import deepcopy
 
 
 class CategoricalDistribution:
@@ -19,7 +18,7 @@ class CategoricalDistribution:
 
         # Normalize histogram
         self.p = histogram / histogram.sum()
-        self.mapping = mapping
+        self.mapping = deepcopy(mapping)
 
     def kl_divergence(self, other_sample):
         sample_histogram = np.zeros(len(self.mapping))
@@ -33,34 +32,11 @@ class CategoricalDistribution:
         return -np.sum(self.p * np.log(q / self.p + self.EPS))
 
 
-# Validity and bond analysis
-def check_stability(positions, atom_type, dataset_info, debug=False):
-    assert len(positions.shape) == 2
-    assert positions.shape[1] == 3
-    atom_decoder = dataset_info['atom_decoder']
-    n = len(positions)
-
-    dists = cdist(positions, positions).reshape(-1)  # remove batch dim & flatten
-    atoms1, atoms2 = np.meshgrid(atom_type, atom_type)
-    atoms1, atoms2 = atoms1.reshape(-1), atoms2.reshape(-1)
-    order = get_bond_order_batch(
-        atoms1, atoms2, dists, dataset_info).numpy().reshape(n, n)
-    np.fill_diagonal(order, 0)  # mask out diagonal
-    nr_bonds = np.sum(order, axis=1)
-
-    nr_stable_bonds = 0
-    for atom_type_i, nr_bonds_i in zip(atom_type, nr_bonds):
-        possible_bonds = allowed_bonds[atom_decoder[atom_type_i]]
-        if type(possible_bonds) == int:
-            is_stable = possible_bonds == nr_bonds_i
-        else:
-            is_stable = nr_bonds_i in possible_bonds
-        if not is_stable and debug:
-            print("Invalid bonds for molecule %s with %d bonds" % (atom_decoder[atom_type_i], nr_bonds_i))
-        nr_stable_bonds += int(is_stable)
-
-    molecule_stable = nr_stable_bonds == n
-    return molecule_stable, nr_stable_bonds, n
+def rdmol_to_smiles(rdmol):
+    mol = Chem.Mol(rdmol)
+    Chem.RemoveStereochemistry(mol)
+    mol = Chem.RemoveHs(mol)
+    return Chem.MolToSmiles(mol)
 
 
 class BasicMolecularMetrics(object):
@@ -97,16 +73,18 @@ class BasicMolecularMetrics(object):
             return [], 0.0
 
         connected = []
+        connected_smiles = []
         for mol in valid:
             mol_frags = Chem.rdmolops.GetMolFrags(mol, asMols=True)
             largest_mol = \
                 max(mol_frags, default=mol, key=lambda m: m.GetNumAtoms())
             if largest_mol.GetNumAtoms() / mol.GetNumAtoms() >= self.connectivity_thresh:
-                smiles = Chem.MolToSmiles(largest_mol)
+                smiles = rdmol_to_smiles(largest_mol)
                 if smiles is not None:
-                    connected.append(smiles)
+                    connected_smiles.append(smiles)
+                    connected.append(largest_mol)
 
-        return connected, len(connected) / len(valid)
+        return connected, len(connected_smiles) / len(valid), connected_smiles
 
     def compute_uniqueness(self, connected):
         """ valid: list of SMILES strings."""
@@ -131,11 +109,12 @@ class BasicMolecularMetrics(object):
         valid, validity = self.compute_validity(rdmols)
         print(f"Validity over {len(rdmols)} molecules: {validity * 100 :.2f}%")
 
-        connected, connectivity = self.compute_connectivity(valid)
+        connected, connectivity, connected_smiles = \
+            self.compute_connectivity(valid)
         print(f"Connectivity over {len(valid)} valid molecules: "
               f"{connectivity * 100 :.2f}%")
 
-        unique, uniqueness = self.compute_uniqueness(connected)
+        unique, uniqueness = self.compute_uniqueness(connected_smiles)
         print(f"Uniqueness over {len(connected)} connected molecules: "
               f"{uniqueness * 100 :.2f}%")
 
@@ -143,7 +122,7 @@ class BasicMolecularMetrics(object):
         print(f"Novelty over {len(unique)} unique connected molecules: "
               f"{novelty * 100 :.2f}%")
 
-        return [validity, connectivity, uniqueness, novelty],
+        return [validity, connectivity, uniqueness, novelty], [valid, connected]
 
     def evaluate(self, generated):
         """ generated: list of pairs (positions: n x 3, atom_types: n [int])
@@ -246,3 +225,27 @@ class MoleculeProperties:
         print(f"Diversity: {np.mean(per_pocket_diversity):.3f} \pm {np.std(per_pocket_diversity):.2f}")
 
         return all_qed, all_sa, all_logp, all_lipinski, per_pocket_diversity
+
+    def evaluate_mean(self, rdmols):
+        """
+        Run full evaluation and return mean of each property
+        Args:
+            rdmols: list of RDKit molecules
+        Returns:
+            QED, SA, LogP, Lipinski, and Diversity
+        """
+
+        if len(rdmols) < 1:
+            return 0.0, 0.0, 0.0, 0.0, 0.0
+
+        for mol in rdmols:
+            Chem.SanitizeMol(mol)
+            assert mol is not None, "only evaluate valid molecules"
+
+        qed = np.mean([self.calculate_qed(mol) for mol in rdmols])
+        sa = np.mean([self.calculate_sa(mol) for mol in rdmols])
+        logp = np.mean([self.calculate_logp(mol) for mol in rdmols])
+        lipinski = np.mean([self.calculate_lipinski(mol) for mol in rdmols])
+        diversity = self.calculate_diversity(rdmols)
+
+        return qed, sa, logp, lipinski, diversity

@@ -16,7 +16,7 @@ from analysis.molecule_builder import get_bond_order
 ###########-->
 
 
-def save_xyz_file(path, one_hot, positions, dataset_info, id_from=0,
+def save_xyz_file(path, one_hot, positions, atom_decoder, id_from=0,
                   name='molecule', batch_mask=None):
     try:
         os.makedirs(path)
@@ -35,7 +35,7 @@ def save_xyz_file(path, one_hot, positions, dataset_info, id_from=0,
         batch_pos = positions[cur_batch_mask]
         for atom_i in range(n_atoms):
             atom = atoms[atom_i]
-            atom = dataset_info['atom_decoder'][atom]
+            atom = atom_decoder[atom]
             f.write("%s %.9f %.9f %.9f\n" % (atom, batch_pos[atom_i, 0], batch_pos[atom_i, 1], batch_pos[atom_i, 2]))
         f.close()
 

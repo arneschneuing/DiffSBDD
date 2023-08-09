@@ -7,21 +7,24 @@ Official implementation of **DiffSBDD**, an equivariant model for structure-base
 
 ![](img/overview.png)
 
+1. [Dependencies](#dependencies)
+   1. [Conda environment](#conda-environment)
+   2. [QuickVina 2](#quickvina-2)
+   3. [Pre-trained models](#pre-trained-models)
+2. [CrossDocked Benchmark](#crossdocked-benchmark)
+3. [Binding MOAD](#binding-moad)
+4. [Training](#training)
+5. [Inference](#inference)
+   1. [Sample molecules for a given pocket](#sample-molecules-for-a-given-pocket)
+   2. [Test set sampling](#sample-molecules-for-all-pockets-in-the-test-set)
+   3. [Fix substructures](#fix-substructures)
+   4. [Metrics](#metrics)
+   5. [QuickVina2](#quickvina2)
+6. [Citation](#citation)
+
 ## Dependencies
 
-- RDKit
-- PyTorch
-- BioPython
-- imageio
-- Scipy
-- wandb
-- torch-scatter
-- PyTorch Lightning
-- openbabel
-- QuickVina 2
-- MGLTools
-
-### Create a conda environment
+### Conda environment
 ```bash
 conda create -n sbdd-env
 conda activate sbdd-env
@@ -63,6 +66,17 @@ We need MGLTools for preparing the receptor for docking (pdb -> pdbqt) but it ca
 conda create -n mgltools -c bioconda mgltools
 ```
 
+### Pre-trained models
+Pre-trained models can be downloaded from [Zenodo](https://zenodo.org/record/8183747).
+- [CrossDocked, conditional $C_\alpha$ model](https://zenodo.org/record/8183747/files/crossdocked_ca_cond.ckpt?download=1)
+- [CrossDocked, joint $C_\alpha$ model](https://zenodo.org/record/8183747/files/crossdocked_ca_joint.ckpt?download=1)
+- [CrossDocked, conditional full-atom model](https://zenodo.org/record/8183747/files/crossdocked_fullatom_cond.ckpt?download=1)
+- [CrossDocked, joint full-atom model](https://zenodo.org/record/8183747/files/crossdocked_fullatom_joint.ckpt?download=1)
+- [Binding MOAD, conditional $C_\alpha$ model](https://zenodo.org/record/8183747/files/moad_ca_cond.ckpt?download=1)
+- [Binding MOAD, joint $C_\alpha$ model](https://zenodo.org/record/8183747/files/moad_ca_joint.ckpt?download=1)
+- [Binding MOAD, conditional full-atom model](https://zenodo.org/record/8183747/files/moad_fullatom_cond.ckpt?download=1)
+- [Binding MOAD, joint full-atom model](https://zenodo.org/record/8183747/files/moad_fullatom_joint.ckpt?download=1)
+
 ## CrossDocked Benchmark
 
 ### Data preparation
@@ -86,12 +100,9 @@ unzip every_part_b.zip
 ```
 Process the raw data using
 ``` bash
-python process_bindingmoad.py <bindingmoad_dir>
-```
-or, to suppress warnings,
-```bash
 python -W ignore process_bindingmoad.py <bindingmoad_dir>
 ```
+Add the `--ca_only` flag to create a dataset with $C_\alpha$ pocket representation.
 
 ## Training
 Starting a new training run:
@@ -124,6 +135,8 @@ Optional flags:
 | Flag | Description |
 |------|-------------|
 | `--n_samples` | Number of sampled molecules |
+| `--num_nodes_lig` | Size of sampled molecules |
+| `--timesteps` | Number of denoising steps for inference |
 | `--all_frags` | Keep all disconnected fragments |
 | `--sanitize` | Sanitize molecules (invalid molecules will be removed if this flag is present) |
 | `--relax` | Relax generated structure in force field |
@@ -133,9 +146,21 @@ Optional flags:
 ### Sample molecules for all pockets in the test set
 `test.py` can be used to sample molecules for the entire testing set:
 ```bash
-python test.py <checkpoint>.ckpt --test_dir <bindingmoad_dir>/processed_noH/test/ --outdir <output_dir> --fix_n_nodes
+python test.py <checkpoint>.ckpt --test_dir <bindingmoad_dir>/processed_noH/test/ --outdir <output_dir> --sanitize
 ```
-Using the optional `--fix_n_nodes` flag lets the model produce ligands with the same number of nodes as the original molecule. Other optional flags are identical to `generate_ligands.py`. 
+There are different ways to determine the size of sampled molecules. 
+- `--fix_n_nodes`: generates ligands with the same number of nodes as the reference molecule
+- `--n_nodes_bias <int>`: samples the number of nodes randomly and adds this bias
+- `--n_nodes_min <int>`: samples the number of nodes randomly but clamps it at this value
+
+Other optional flags are equivalent to `generate_ligands.py`. 
+
+### Fix substructures
+`inpaint.py` can be used for partial ligand redesign with the conditionally trained model, e.g.:
+```bash 
+python inpaint.py <checkpoint>.ckpt --pdbfile <pdb_file>.pdb --outdir <output_dir> --ref_ligand <chain>:<resi> --fix_atoms C1 N6 C5 C12
+```
+`--add_n_nodes` controls the number of newly generated nodes
 
 ### Metrics
 For assessing basic molecular properties create an instance of the `MoleculeProperties` class and run its `evaluate` method:
@@ -164,7 +189,7 @@ conda activate sbdd-env
 python analysis/docking.py --pdbqt_dir <docking_py27_outdir> --sdf_dir <test_outdir> --out_dir <qvina_outdir> --write_csv --write_dict
 ```
 
-### Citation
+## Citation
 ```
 @article{schneuing2022structure,
   title={Structure-based Drug Design with Equivariant Diffusion Models},

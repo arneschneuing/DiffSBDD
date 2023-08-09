@@ -19,7 +19,7 @@ if __name__ == "__main__":
     parser.add_argument('--all_frags', action='store_true')
     parser.add_argument('--sanitize', action='store_true')
     parser.add_argument('--relax', action='store_true')
-    parser.add_argument('--resamplings', type=int, default=1)
+    parser.add_argument('--resamplings', type=int, default=10)
     parser.add_argument('--jump_length', type=int, default=1)
     parser.add_argument('--timesteps', type=int, default=None)
     args = parser.parse_args()

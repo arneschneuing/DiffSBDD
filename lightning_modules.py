@@ -22,9 +22,10 @@ from equivariant_diffusion.conditional_model import ConditionalDDPM, \
 from dataset import ProcessedLigandPocketDataset
 import utils
 from analysis.visualization import save_xyz_file, visualize, visualize_chain
-from analysis.metrics import check_stability, BasicMolecularMetrics, \
-    CategoricalDistribution
+from analysis.metrics import BasicMolecularMetrics, CategoricalDistribution, \
+    MoleculeProperties
 from analysis.molecule_builder import build_molecule, process_molecule
+from analysis.docking import smina_score
 
 
 class LigandPocketDDPM(pl.LightningModule):
@@ -50,6 +51,7 @@ class LigandPocketDDPM(pl.LightningModule):
             mode,
             node_histogram,
             pocket_representation='CA',
+            virtual_nodes=False
     ):
         super(LigandPocketDDPM, self).__init__()
         self.save_hyperparameters()
@@ -85,23 +87,6 @@ class LigandPocketDDPM(pl.LightningModule):
             # Add large value that will be flushed.
             self.gradnorm_queue.add(3000)
 
-        smiles_list = None if eval_params.smiles_file is None \
-            else np.load(eval_params.smiles_file)
-        self.ligand_metrics = BasicMolecularMetrics(self.dataset_info,
-                                                    smiles_list)
-        self.ligand_type_distribution = CategoricalDistribution(
-            self.dataset_info['atom_hist'], self.dataset_info['atom_encoder'])
-        if self.pocket_representation == 'CA':
-            self.pocket_type_distribution = CategoricalDistribution(
-                self.dataset_info['aa_hist'], self.dataset_info['aa_encoder'])
-        else:
-            # TODO: full-atom case
-            self.pocket_type_distribution = None
-
-        self.train_dataset = None
-        self.val_dataset = None
-        self.test_dataset = None
-
         self.lig_type_encoder = self.dataset_info['atom_encoder']
         self.lig_type_decoder = self.dataset_info['atom_decoder']
         self.pocket_type_encoder = self.dataset_info['aa_encoder'] \
@@ -110,6 +95,40 @@ class LigandPocketDDPM(pl.LightningModule):
         self.pocket_type_decoder = self.dataset_info['aa_decoder'] \
             if self.pocket_representation == 'CA' \
             else self.dataset_info['atom_decoder']
+
+        smiles_list = None if eval_params.smiles_file is None \
+            else np.load(eval_params.smiles_file)
+        self.ligand_metrics = BasicMolecularMetrics(self.dataset_info,
+                                                    smiles_list)
+        self.molecule_properties = MoleculeProperties()
+        self.ligand_type_distribution = CategoricalDistribution(
+            self.dataset_info['atom_hist'], self.lig_type_encoder)
+        if self.pocket_representation == 'CA':
+            self.pocket_type_distribution = CategoricalDistribution(
+                self.dataset_info['aa_hist'], self.pocket_type_encoder)
+        else:
+            self.pocket_type_distribution = None
+
+        self.train_dataset = None
+        self.val_dataset = None
+        self.test_dataset = None
+
+        self.virtual_nodes = virtual_nodes
+        self.data_transform = None
+        self.max_num_nodes = len(node_histogram) - 1
+        if virtual_nodes:
+            # symbol = 'virtual'
+            symbol = 'Ne'  # visualize as Neon atoms
+            self.lig_type_encoder[symbol] = len(self.lig_type_encoder)
+            self.virtual_atom = self.lig_type_encoder[symbol]
+            self.lig_type_decoder.append(symbol)
+            self.data_transform = utils.AppendVirtualNodes(
+                self.max_num_nodes, self.lig_type_encoder, symbol)
+
+            # Update dataset_info dictionary. This is necessary for using the
+            # visualization functions.
+            self.dataset_info['atom_encoder'] = self.lig_type_encoder
+            self.dataset_info['atom_decoder'] = self.lig_type_decoder
 
         self.atom_nf = len(self.lig_type_decoder)
         self.aa_nf = len(self.pocket_type_decoder)
@@ -131,8 +150,12 @@ class LigandPocketDDPM(pl.LightningModule):
             sin_embedding=egnn_params.sin_embedding,
             normalization_factor=egnn_params.normalization_factor,
             aggregation_method=egnn_params.aggregation_method,
-            edge_cutoff=egnn_params.__dict__.get('edge_cutoff'),
-            update_pocket_coords=(self.mode == 'joint')
+            edge_cutoff_ligand=egnn_params.__dict__.get('edge_cutoff_ligand'),
+            edge_cutoff_pocket=egnn_params.__dict__.get('edge_cutoff_pocket'),
+            edge_cutoff_interaction=egnn_params.__dict__.get('edge_cutoff_interaction'),
+            update_pocket_coords=(self.mode == 'joint'),
+            reflection_equivariant=egnn_params.reflection_equivariant,
+            edge_embedding_dim=egnn_params.__dict__.get('edge_embedding_dim'),
         )
 
         self.ddpm = ddpm_models[self.mode](
@@ -146,9 +169,11 @@ class LigandPocketDDPM(pl.LightningModule):
                 loss_type=diffusion_params.diffusion_loss_type,
                 norm_values=diffusion_params.normalize_factors,
                 size_histogram=node_histogram,
-            )
+                virtual_node_idx=self.lig_type_encoder[symbol] if virtual_nodes else None
+        )
 
         self.auxiliary_loss = auxiliary_loss
+        self.lj_rm = self.dataset_info['lennard_jones_rm']
         if self.auxiliary_loss:
             self.clamp_lj = loss_params.clamp_lj
             self.auxiliary_weight_schedule = WeightSchedule(
@@ -162,40 +187,46 @@ class LigandPocketDDPM(pl.LightningModule):
     def setup(self, stage: Optional[str] = None):
         if stage == 'fit':
             self.train_dataset = ProcessedLigandPocketDataset(
-                Path(self.datadir, 'train.npz'))
+                Path(self.datadir, 'train.npz'), transform=self.data_transform)
             self.val_dataset = ProcessedLigandPocketDataset(
-                Path(self.datadir, 'val.npz'))
+                Path(self.datadir, 'val.npz'), transform=self.data_transform)
         elif stage == 'test':
             self.test_dataset = ProcessedLigandPocketDataset(
-                Path(self.datadir, 'test.npz'))
+                Path(self.datadir, 'test.npz'), transform=self.data_transform)
         else:
             raise NotImplementedError
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, self.batch_size, shuffle=True,
                           num_workers=self.num_workers,
-                          collate_fn=self.train_dataset.collate_fn)
+                          collate_fn=self.train_dataset.collate_fn,
+                          pin_memory=True)
 
     def val_dataloader(self):
         return DataLoader(self.val_dataset, self.batch_size, shuffle=False,
                           num_workers=self.num_workers,
-                          collate_fn=self.val_dataset.collate_fn)
+                          collate_fn=self.val_dataset.collate_fn,
+                          pin_memory=True)
 
     def test_dataloader(self):
         return DataLoader(self.test_dataset, self.batch_size, shuffle=False,
                           num_workers=self.num_workers,
-                          collate_fn=self.test_dataset.collate_fn)
+                          collate_fn=self.test_dataset.collate_fn,
+                          pin_memory=True)
 
     def get_ligand_and_pocket(self, data):
         ligand = {
             'x': data['lig_coords'].to(self.device, FLOAT_TYPE),
             'one_hot': data['lig_one_hot'].to(self.device, FLOAT_TYPE),
             'size': data['num_lig_atoms'].to(self.device, INT_TYPE),
-            'mask': data['lig_mask'].to(self.device, INT_TYPE)
+            'mask': data['lig_mask'].to(self.device, INT_TYPE),
         }
+        if self.virtual_nodes:
+            ligand['num_virtual_atoms'] = data['num_virtual_atoms'].to(
+                self.device, INT_TYPE)
 
         pocket = {
-            'x': data['pocket_c_alpha'].to(self.device, FLOAT_TYPE),
+            'x': data['pocket_coords'].to(self.device, FLOAT_TYPE),
             'one_hot': data['pocket_one_hot'].to(self.device, FLOAT_TYPE),
             'size': data['num_pocket_nodes'].to(self.device, INT_TYPE),
             'mask': data['pocket_mask'].to(self.device, INT_TYPE)
@@ -213,15 +244,18 @@ class LigandPocketDDPM(pl.LightningModule):
             self.ddpm(ligand, pocket, return_info=True)
 
         if self.loss_type == 'l2' and self.training:
+            actual_ligand_size = ligand['size'] - ligand['num_virtual_atoms'] if self.virtual_nodes else ligand['size']
+
             # normalize loss_t
-            denom_lig = (self.x_dims + self.ddpm.atom_nf) * ligand['size']
+            denom_lig = self.x_dims * actual_ligand_size + \
+                        self.ddpm.atom_nf * ligand['size']
             error_t_lig = error_t_lig / denom_lig
             denom_pocket = (self.x_dims + self.ddpm.residue_nf) * pocket['size']
             error_t_pocket = error_t_pocket / denom_pocket
             loss_t = 0.5 * (error_t_lig + error_t_pocket)
 
             # normalize loss_0
-            loss_0_x_ligand = loss_0_x_ligand / (self.x_dims * ligand['size'])
+            loss_0_x_ligand = loss_0_x_ligand / (self.x_dims * actual_ligand_size)
             loss_0_x_pocket = loss_0_x_pocket / (self.x_dims * pocket['size'])
             loss_0 = loss_0_x_ligand + loss_0_x_pocket + loss_0_h
 
@@ -238,12 +272,14 @@ class LigandPocketDDPM(pl.LightningModule):
         if not (self.loss_type == 'l2' and self.training):
             nll = nll - delta_log_px
 
-            # Transform conditional nll into joint nll
-            # Note:
-            # loss = -log p(x,h|N) and log p(x,h,N) = log p(x,h|N) + log p(N)
-            # Therefore, log p(x,h|N) = -loss + log p(N)
-            # => loss_new = -log p(x,h,N) = loss - log p(N)
-            nll = nll - log_pN
+            # always the same number of nodes if virtual nodes are added
+            if not self.virtual_nodes:
+                # Transform conditional nll into joint nll
+                # Note:
+                # loss = -log p(x,h|N) and log p(x,h,N) = log p(x,h|N) + log p(N)
+                # Therefore, log p(x,h|N) = -loss + log p(N)
+                # => loss_new = -log p(x,h,N) = loss - log p(N)
+                nll = nll - log_pN
 
         # Add auxiliary loss term
         if self.auxiliary_loss and self.loss_type == 'l2' and self.training:
@@ -274,8 +310,7 @@ class LigandPocketDDPM(pl.LightningModule):
         r = torch.sum((atom_x[edges[0]] - atom_x[edges[1]])**2, dim=1).sqrt()
 
         # Get optimal radii
-        lennard_jones_radii = torch.tensor(
-            self.dataset_info['lennard_jones_rm'], device=r.device)
+        lennard_jones_radii = torch.tensor(self.lj_rm, device=r.device)
         # unit conversion pm -> A
         lennard_jones_radii = lennard_jones_radii / 100.0
         # normalization
@@ -310,7 +345,16 @@ class LigandPocketDDPM(pl.LightningModule):
             raise NotImplementedError
             x = utils.random_rotation(x).detach()
 
-        nll, info = self.forward(data)
+        try:
+            nll, info = self.forward(data)
+        except RuntimeError as e:
+            # this is not supported for multi-GPU
+            if self.trainer.num_devices < 2 and 'out of memory' in str(e):
+                print('WARNING: ran out of memory, skipping to the next batch')
+                return None
+            else:
+                raise e
+
         loss = nll.mean(0)
 
         info['loss'] = loss
@@ -323,14 +367,6 @@ class LigandPocketDDPM(pl.LightningModule):
         loss = nll.mean(0)
 
         info['loss'] = loss
-
-        # some additional info
-        gamma_0 = self.ddpm.gamma(torch.zeros(1, device=self.device))
-        gamma_1 = self.ddpm.gamma(torch.ones(1, device=self.device))
-        log_SNR_max = -gamma_0
-        log_SNR_min = -gamma_1
-        info['log_SNR_max'] = log_SNR_max
-        info['log_SNR_min'] = log_SNR_min
 
         self.log_metrics(info, prefix, batch_size=len(data['num_lig_atoms']),
                          sync_dist=True)
@@ -346,7 +382,6 @@ class LigandPocketDDPM(pl.LightningModule):
     def validation_epoch_end(self, validation_step_outputs):
 
         # Perform validation on single GPU
-        # TODO: sample on multiple devices if available
         if not self.trainer.is_global_zero:
             return
 
@@ -376,7 +411,7 @@ class LigandPocketDDPM(pl.LightningModule):
 
     @torch.no_grad()
     def sample_and_analyze(self, n_samples, dataset=None, batch_size=None):
-        print(f'Analyzing molecule stability at epoch {self.current_epoch}...')
+        print(f'Analyzing sampled molecules at epoch {self.current_epoch}...')
 
         batch_size = self.batch_size if batch_size is None else batch_size
         batch_size = min(batch_size, n_samples)
@@ -398,6 +433,7 @@ class LigandPocketDDPM(pl.LightningModule):
 
             x = xh_lig[:, :self.x_dims].detach().cpu()
             atom_type = xh_lig[:, self.x_dims:].argmax(1).detach().cpu()
+            lig_mask = lig_mask.cpu()
 
             molecules.extend(list(
                 zip(utils.batch_to_list(x, lig_mask),
@@ -410,46 +446,53 @@ class LigandPocketDDPM(pl.LightningModule):
 
         return self.analyze_sample(molecules, atom_types, aa_types)
 
-    def analyze_sample(self, molecules, atom_types, aa_types):
+    def analyze_sample(self, molecules, atom_types, aa_types, receptors=None):
         # Distribution of node types
         kl_div_atom = self.ligand_type_distribution.kl_divergence(atom_types) \
             if self.ligand_type_distribution is not None else -1
         kl_div_aa = self.pocket_type_distribution.kl_divergence(aa_types) \
             if self.pocket_type_distribution is not None else -1
 
-        # Stability
-        molecule_stable = 0
-        nr_stable_bonds = 0
-        n_atoms = 0
-        for pos, atom_type in molecules:
-            validity_results = check_stability(pos, atom_type,
-                                               self.dataset_info)
-            molecule_stable += int(validity_results[0])
-            nr_stable_bonds += int(validity_results[1])
-            n_atoms += int(validity_results[2])
-
-        fraction_mol_stable = molecule_stable / float(len(molecules))
-        fraction_atm_stable = nr_stable_bonds / float(n_atoms)
+        # Convert into rdmols
+        rdmols = [build_molecule(*graph, self.dataset_info) for graph in molecules]
 
         # Other basic metrics
-        validity, connectivity, uniqueness, novelty = \
-            self.ligand_metrics.evaluate(molecules)[0]
+        (validity, connectivity, uniqueness, novelty), (_, connected_mols) = \
+            self.ligand_metrics.evaluate_rdmols(rdmols)
 
-        return {
+        qed, sa, logp, lipinski, diversity = \
+            self.molecule_properties.evaluate_mean(connected_mols)
+
+        out = {
             'kl_div_atom_types': kl_div_atom,
             'kl_div_residue_types': kl_div_aa,
-            'mol_stable': fraction_mol_stable,
-            'atm_stable': fraction_atm_stable,
             'Validity': validity,
             'Connectivity': connectivity,
             'Uniqueness': uniqueness,
-            'Novelty': novelty
+            'Novelty': novelty,
+            'QED': qed,
+            'SA': sa,
+            'LogP': logp,
+            'Lipinski': lipinski,
+            'Diversity': diversity
         }
+
+        # Simple docking score
+        if receptors is not None:
+            # out['smina_score'] = np.mean(smina_score(rdmols, receptors))
+            out['smina_score'] = np.mean(smina_score(connected_mols, receptors))
+
+        return out
+
+    def get_full_path(self, receptor_name):
+        pdb, suffix = receptor_name.split('.')
+        receptor_name = f'{pdb.upper()}-{suffix}.pdb'
+        return Path(self.datadir, 'val', receptor_name)
 
     @torch.no_grad()
     def sample_and_analyze_given_pocket(self, n_samples, dataset=None,
                                         batch_size=None):
-        print(f'Analyzing molecule stability given pockets at epoch '
+        print(f'Analyzing sampled molecules given pockets at epoch '
               f'{self.current_epoch}...')
 
         batch_size = self.batch_size if batch_size is None else batch_size
@@ -459,6 +502,7 @@ class LigandPocketDDPM(pl.LightningModule):
         molecules = []
         atom_types = []
         aa_types = []
+        receptors = []
         for i in range(math.ceil(n_samples / batch_size)):
 
             n_samples_batch = min(batch_size, n_samples - len(molecules))
@@ -470,15 +514,27 @@ class LigandPocketDDPM(pl.LightningModule):
             )
 
             ligand, pocket = self.get_ligand_and_pocket(batch)
+            receptors.extend([self.get_full_path(x) for x in batch['receptors']])
 
-            num_nodes_lig = self.ddpm.size_distribution.sample_conditional(
-                n1=None, n2=pocket['size'])
+            if self.virtual_nodes:
+                num_nodes_lig = self.max_num_nodes
+            else:
+                num_nodes_lig = self.ddpm.size_distribution.sample_conditional(
+                    n1=None, n2=pocket['size'])
 
             xh_lig, xh_pocket, lig_mask, _ = self.ddpm.sample_given_pocket(
                 pocket, num_nodes_lig)
 
             x = xh_lig[:, :self.x_dims].detach().cpu()
             atom_type = xh_lig[:, self.x_dims:].argmax(1).detach().cpu()
+            lig_mask = lig_mask.cpu()
+
+            if self.virtual_nodes:
+                # Remove virtual nodes for analysis
+                vnode_mask = (atom_type == self.virtual_atom)
+                x = x[~vnode_mask, :]
+                atom_type = atom_type[~vnode_mask]
+                lig_mask = lig_mask[~vnode_mask]
 
             molecules.extend(list(
                 zip(utils.batch_to_list(x, lig_mask),
@@ -489,7 +545,8 @@ class LigandPocketDDPM(pl.LightningModule):
             aa_types.extend(
                 xh_pocket[:, self.x_dims:].argmax(1).detach().cpu().tolist())
 
-        return self.analyze_sample(molecules, atom_types, aa_types)
+        return self.analyze_sample(molecules, atom_types, aa_types,
+                                   receptors=receptors)
 
     def sample_and_save(self, n_samples):
         num_nodes_lig, num_nodes_pocket = \
@@ -502,7 +559,7 @@ class LigandPocketDDPM(pl.LightningModule):
         if self.pocket_representation == 'CA':
             # convert residues into atom representation for visualization
             x_pocket, one_hot_pocket = utils.residues_to_atoms(
-                xh_pocket[:, :self.x_dims], self.dataset_info)
+                xh_pocket[:, :self.x_dims], self.lig_type_encoder)
         else:
             x_pocket, one_hot_pocket = \
                 xh_pocket[:, :self.x_dims], xh_pocket[:, self.x_dims:]
@@ -510,7 +567,7 @@ class LigandPocketDDPM(pl.LightningModule):
         one_hot = torch.cat((xh_lig[:, self.x_dims:], one_hot_pocket), dim=0)
 
         outdir = Path(self.outdir, f'epoch_{self.current_epoch}')
-        save_xyz_file(str(outdir) + '/', one_hot, x, self.dataset_info,
+        save_xyz_file(str(outdir) + '/', one_hot, x, self.lig_type_decoder,
                       name='molecule',
                       batch_mask=torch.cat((lig_mask, pocket_mask)))
         # visualize(str(outdir), dataset_info=self.dataset_info, wandb=wandb)
@@ -523,8 +580,11 @@ class LigandPocketDDPM(pl.LightningModule):
         )
         ligand, pocket = self.get_ligand_and_pocket(batch)
 
-        num_nodes_lig = self.ddpm.size_distribution.sample_conditional(
-            n1=None, n2=pocket['size'])
+        if self.virtual_nodes:
+            num_nodes_lig = self.max_num_nodes
+        else:
+            num_nodes_lig = self.ddpm.size_distribution.sample_conditional(
+                n1=None, n2=pocket['size'])
 
         xh_lig, xh_pocket, lig_mask, pocket_mask = \
             self.ddpm.sample_given_pocket(pocket, num_nodes_lig)
@@ -532,7 +592,7 @@ class LigandPocketDDPM(pl.LightningModule):
         if self.pocket_representation == 'CA':
             # convert residues into atom representation for visualization
             x_pocket, one_hot_pocket = utils.residues_to_atoms(
-                xh_pocket[:, :self.x_dims], self.dataset_info)
+                xh_pocket[:, :self.x_dims], self.lig_type_encoder)
         else:
             x_pocket, one_hot_pocket = \
                 xh_pocket[:, :self.x_dims], xh_pocket[:, self.x_dims:]
@@ -540,7 +600,7 @@ class LigandPocketDDPM(pl.LightningModule):
         one_hot = torch.cat((xh_lig[:, self.x_dims:], one_hot_pocket), dim=0)
 
         outdir = Path(self.outdir, f'epoch_{self.current_epoch}')
-        save_xyz_file(str(outdir) + '/', one_hot, x, self.dataset_info,
+        save_xyz_file(str(outdir) + '/', one_hot, x, self.lig_type_decoder,
                       name='molecule',
                       batch_mask=torch.cat((lig_mask, pocket_mask)))
         # visualize(str(outdir), dataset_info=self.dataset_info, wandb=wandb)
@@ -548,57 +608,39 @@ class LigandPocketDDPM(pl.LightningModule):
 
     def sample_chain_and_save(self, keep_frames):
         n_samples = 1
-        n_tries = 1
 
         num_nodes_lig, num_nodes_pocket = \
             self.ddpm.size_distribution.sample(n_samples)
 
-        one_hot_lig, x_lig, one_hot_pocket, x_pocket = [None] * 4
-        for i in range(n_tries):
-            chain_lig, chain_pocket, _, _ = self.ddpm.sample(
-                n_samples, num_nodes_lig, num_nodes_pocket,
-                return_frames=keep_frames, device=self.device)
+        chain_lig, chain_pocket, _, _ = self.ddpm.sample(
+            n_samples, num_nodes_lig, num_nodes_pocket,
+            return_frames=keep_frames, device=self.device)
 
-            chain_lig = utils.reverse_tensor(chain_lig)
-            chain_pocket = utils.reverse_tensor(chain_pocket)
+        chain_lig = utils.reverse_tensor(chain_lig)
+        chain_pocket = utils.reverse_tensor(chain_pocket)
 
-            # Repeat last frame to see final sample better.
-            chain_lig = torch.cat([chain_lig, chain_lig[-1:].repeat(10, 1, 1)],
-                                  dim=0)
-            chain_pocket = torch.cat(
-                [chain_pocket, chain_pocket[-1:].repeat(10, 1, 1)], dim=0)
+        # Repeat last frame to see final sample better.
+        chain_lig = torch.cat([chain_lig, chain_lig[-1:].repeat(10, 1, 1)],
+                              dim=0)
+        chain_pocket = torch.cat(
+            [chain_pocket, chain_pocket[-1:].repeat(10, 1, 1)], dim=0)
 
-            # Check stability of the generated ligand
-            x_final = chain_lig[-1, :, :self.x_dims].cpu().detach().numpy()
-            one_hot_final = chain_lig[-1, :, self.x_dims:]
-            atom_type_final = torch.argmax(
-                one_hot_final, dim=1).cpu().detach().numpy()
-
-            mol_stable = check_stability(x_final, atom_type_final,
-                                         self.dataset_info)[0]
-
-            # Prepare entire chain.
-            x_lig = chain_lig[:, :, :self.x_dims]
-            one_hot_lig = chain_lig[:, :, self.x_dims:]
-            one_hot_lig = F.one_hot(
-                torch.argmax(one_hot_lig, dim=2),
-                num_classes=len(self.lig_type_decoder))
-            x_pocket = chain_pocket[:, :, :self.x_dims]
-            one_hot_pocket = chain_pocket[:, :, self.x_dims:]
-            one_hot_pocket = F.one_hot(
-                torch.argmax(one_hot_pocket, dim=2),
-                num_classes=len(self.pocket_type_decoder))
-
-            if mol_stable:
-                print('Found stable molecule to visualize :)')
-                break
-            elif i == n_tries - 1:
-                print('Did not find stable molecule, showing last sample.')
+        # Prepare entire chain.
+        x_lig = chain_lig[:, :, :self.x_dims]
+        one_hot_lig = chain_lig[:, :, self.x_dims:]
+        one_hot_lig = F.one_hot(
+            torch.argmax(one_hot_lig, dim=2),
+            num_classes=len(self.lig_type_decoder))
+        x_pocket = chain_pocket[:, :, :self.x_dims]
+        one_hot_pocket = chain_pocket[:, :, self.x_dims:]
+        one_hot_pocket = F.one_hot(
+            torch.argmax(one_hot_pocket, dim=2),
+            num_classes=len(self.pocket_type_decoder))
 
         if self.pocket_representation == 'CA':
             # convert residues into atom representation for visualization
             x_pocket, one_hot_pocket = utils.residues_to_atoms(
-                x_pocket, self.dataset_info)
+                x_pocket, self.lig_type_encoder)
 
         x = torch.cat((x_lig, x_pocket), dim=1)
         one_hot = torch.cat((one_hot_lig, one_hot_pocket), dim=1)
@@ -609,67 +651,52 @@ class LigandPocketDDPM(pl.LightningModule):
         mask_flat = torch.arange(x.size(0)).repeat_interleave(x.size(1))
 
         outdir = Path(self.outdir, f'epoch_{self.current_epoch}', 'chain')
-        save_xyz_file(str(outdir), one_hot_flat, x_flat, self.dataset_info,
+        save_xyz_file(str(outdir), one_hot_flat, x_flat, self.lig_type_decoder,
                       name='/chain', batch_mask=mask_flat)
         visualize_chain(str(outdir), self.dataset_info, wandb=wandb)
 
     def sample_chain_and_save_given_pocket(self, keep_frames):
         n_samples = 1
-        n_tries = 1
 
         batch = self.val_dataset.collate_fn([
             self.val_dataset[torch.randint(len(self.val_dataset), size=(1,))]
         ])
         ligand, pocket = self.get_ligand_and_pocket(batch)
 
-        num_nodes_lig = self.ddpm.size_distribution.sample_conditional(
-            n1=None, n2=pocket['size'])
+        if self.virtual_nodes:
+            num_nodes_lig = self.max_num_nodes
+        else:
+            num_nodes_lig = self.ddpm.size_distribution.sample_conditional(
+                n1=None, n2=pocket['size'])
 
-        one_hot_lig, x_lig, one_hot_pocket, x_pocket = [None] * 4
-        for i in range(n_tries):
-            chain_lig, chain_pocket, _, _ = self.ddpm.sample_given_pocket(
-                pocket, num_nodes_lig, return_frames=keep_frames)
+        chain_lig, chain_pocket, _, _ = self.ddpm.sample_given_pocket(
+            pocket, num_nodes_lig, return_frames=keep_frames)
 
-            chain_lig = utils.reverse_tensor(chain_lig)
-            chain_pocket = utils.reverse_tensor(chain_pocket)
+        chain_lig = utils.reverse_tensor(chain_lig)
+        chain_pocket = utils.reverse_tensor(chain_pocket)
 
-            # Repeat last frame to see final sample better.
-            chain_lig = torch.cat([chain_lig, chain_lig[-1:].repeat(10, 1, 1)],
-                                  dim=0)
-            chain_pocket = torch.cat(
-                [chain_pocket, chain_pocket[-1:].repeat(10, 1, 1)], dim=0)
+        # Repeat last frame to see final sample better.
+        chain_lig = torch.cat([chain_lig, chain_lig[-1:].repeat(10, 1, 1)],
+                              dim=0)
+        chain_pocket = torch.cat(
+            [chain_pocket, chain_pocket[-1:].repeat(10, 1, 1)], dim=0)
 
-            # Check stability of the generated ligand
-            x_final = chain_lig[-1, :, :self.x_dims].cpu().detach().numpy()
-            one_hot_final = chain_lig[-1, :, self.x_dims:]
-            atom_type_final = torch.argmax(
-                one_hot_final, dim=1).cpu().detach().numpy()
-
-            mol_stable = check_stability(x_final, atom_type_final,
-                                         self.dataset_info)[0]
-
-            # Prepare entire chain.
-            x_lig = chain_lig[:, :, :self.x_dims]
-            one_hot_lig = chain_lig[:, :, self.x_dims:]
-            one_hot_lig = F.one_hot(
-                torch.argmax(one_hot_lig, dim=2),
-                num_classes=len(self.lig_type_decoder))
-            x_pocket = chain_pocket[:, :, :3]
-            one_hot_pocket = chain_pocket[:, :, 3:]
-            one_hot_pocket = F.one_hot(
-                torch.argmax(one_hot_pocket, dim=2),
-                num_classes=len(self.pocket_type_decoder))
-
-            if mol_stable:
-                print('Found stable molecule to visualize :)')
-                break
-            elif i == n_tries - 1:
-                print('Did not find stable molecule, showing last sample.')
+        # Prepare entire chain.
+        x_lig = chain_lig[:, :, :self.x_dims]
+        one_hot_lig = chain_lig[:, :, self.x_dims:]
+        one_hot_lig = F.one_hot(
+            torch.argmax(one_hot_lig, dim=2),
+            num_classes=len(self.lig_type_decoder))
+        x_pocket = chain_pocket[:, :, :3]
+        one_hot_pocket = chain_pocket[:, :, 3:]
+        one_hot_pocket = F.one_hot(
+            torch.argmax(one_hot_pocket, dim=2),
+            num_classes=len(self.pocket_type_decoder))
 
         if self.pocket_representation == 'CA':
             # convert residues into atom representation for visualization
             x_pocket, one_hot_pocket = utils.residues_to_atoms(
-                x_pocket, self.dataset_info)
+                x_pocket, self.lig_type_encoder)
 
         x = torch.cat((x_lig, x_pocket), dim=1)
         one_hot = torch.cat((one_hot_lig, one_hot_pocket), dim=1)
@@ -680,14 +707,54 @@ class LigandPocketDDPM(pl.LightningModule):
         mask_flat = torch.arange(x.size(0)).repeat_interleave(x.size(1))
 
         outdir = Path(self.outdir, f'epoch_{self.current_epoch}', 'chain')
-        save_xyz_file(str(outdir), one_hot_flat, x_flat, self.dataset_info,
+        save_xyz_file(str(outdir), one_hot_flat, x_flat, self.lig_type_decoder,
                       name='/chain', batch_mask=mask_flat)
         visualize_chain(str(outdir), self.dataset_info, wandb=wandb)
+
+    def prepare_pocket(self, biopython_residues, repeats=1):
+
+        if self.pocket_representation == 'CA':
+            pocket_coord = torch.tensor(np.array(
+                [res['CA'].get_coord() for res in biopython_residues]),
+                device=self.device, dtype=FLOAT_TYPE)
+            pocket_types = torch.tensor(
+                [self.pocket_type_encoder[three_to_one(res.get_resname())]
+                 for res in biopython_residues], device=self.device)
+        else:
+            pocket_atoms = [a for res in biopython_residues
+                            for a in res.get_atoms()
+                            if (a.element.capitalize() in self.pocket_type_encoder or a.element != 'H')]
+            pocket_coord = torch.tensor(np.array(
+                [a.get_coord() for a in pocket_atoms]),
+                device=self.device, dtype=FLOAT_TYPE)
+            pocket_types = torch.tensor(
+                [self.pocket_type_encoder[a.element.capitalize()]
+                 for a in pocket_atoms], device=self.device)
+
+        pocket_one_hot = F.one_hot(
+            pocket_types, num_classes=len(self.pocket_type_encoder)
+        )
+
+        pocket_size = torch.tensor([len(pocket_coord)] * repeats,
+                                   device=self.device, dtype=INT_TYPE)
+        pocket_mask = torch.repeat_interleave(
+            torch.arange(repeats, device=self.device, dtype=INT_TYPE),
+            len(pocket_coord)
+        )
+
+        pocket = {
+            'x': pocket_coord.repeat(repeats, 1),
+            'one_hot': pocket_one_hot.repeat(repeats, 1),
+            'size': pocket_size,
+            'mask': pocket_mask
+        }
+
+        return pocket
 
     def generate_ligands(self, pdb_file, n_samples, pocket_ids=None,
                          ref_ligand=None, num_nodes_lig=None, sanitize=False,
                          largest_frag=False, relax_iter=0, timesteps=None,
-                         **kwargs):
+                         n_nodes_bias=0, n_nodes_min=0, **kwargs):
         """
         Generate ligands given a pocket
         Args:
@@ -702,12 +769,16 @@ class LigandPocketDDPM(pl.LightningModule):
             largest_frag: only return the largest fragment
             relax_iter: number of force field optimization steps
             timesteps: number of denoising steps, use training value if None
+            n_nodes_bias: added to the sampled (or provided) number of nodes
+            n_nodes_min: lower bound on the number of sampled nodes
             kwargs: additional inpainting parameters
         Returns:
             list of molecules
         """
 
         assert (pocket_ids is None) ^ (ref_ligand is None)
+
+        self.ddpm.eval()
 
         # Load PDB
         pdb_struct = PDBParser(QUIET=True).get_structure('', pdb_file)[0]
@@ -721,40 +792,7 @@ class LigandPocketDDPM(pl.LightningModule):
             # define pocket with reference ligand
             residues = utils.get_pocket_from_ligand(pdb_struct, ref_ligand)
 
-        if self.pocket_representation == 'CA':
-            pocket_coord = torch.tensor(np.array(
-                [res['CA'].get_coord() for res in residues]),
-                device=self.device, dtype=FLOAT_TYPE)
-            pocket_types = torch.tensor(
-                [self.pocket_type_encoder[three_to_one(res.get_resname())]
-                 for res in residues], device=self.device)
-        else:
-            pocket_atoms = [a for res in residues for a in res.get_atoms()
-                            if (a.element.capitalize() in self.pocket_type_encoder or a.element != 'H')]
-            pocket_coord = torch.tensor(np.array(
-                [a.get_coord() for a in pocket_atoms]),
-                device=self.device, dtype=FLOAT_TYPE)
-            pocket_types = torch.tensor(
-                [self.pocket_type_encoder[a.element.capitalize()]
-                 for a in pocket_atoms], device=self.device)
-
-        pocket_one_hot = F.one_hot(
-            pocket_types, num_classes=len(self.pocket_type_encoder)
-        )
-
-        pocket_size = torch.tensor([len(pocket_coord)] * n_samples,
-                                   device=self.device, dtype=INT_TYPE)
-        pocket_mask = torch.repeat_interleave(
-            torch.arange(n_samples, device=self.device, dtype=INT_TYPE),
-            len(pocket_coord)
-        )
-
-        pocket = {
-            'x': pocket_coord.repeat(n_samples, 1),
-            'one_hot': pocket_one_hot.repeat(n_samples, 1),
-            'size': pocket_size,
-            'mask': pocket_mask
-        }
+        pocket = self.prepare_pocket(residues, repeats=n_samples)
 
         # Pocket's center of mass
         pocket_com_before = scatter_mean(pocket['x'], pocket['mask'], dim=0)
@@ -763,6 +801,12 @@ class LigandPocketDDPM(pl.LightningModule):
         if num_nodes_lig is None:
             num_nodes_lig = self.ddpm.size_distribution.sample_conditional(
                 n1=None, n2=pocket['size'])
+
+        # Add bias
+        num_nodes_lig = num_nodes_lig + n_nodes_bias
+
+        # Apply minimum ligand size
+        num_nodes_lig = torch.clamp(num_nodes_lig, min=n_nodes_min)
 
         # Use inpainting
         if type(self.ddpm) == EnVariationalDiffusion:
@@ -806,9 +850,9 @@ class LigandPocketDDPM(pl.LightningModule):
             (pocket_com_before - pocket_com_after)[lig_mask]
 
         # Build mol objects
-        lig_mask = lig_mask.cpu()
         x = xh_lig[:, :self.x_dims].detach().cpu()
         atom_type = xh_lig[:, self.x_dims:].argmax(1).detach().cpu()
+        lig_mask = lig_mask.cpu()
 
         molecules = []
         for mol_pc in zip(utils.batch_to_list(x, lig_mask),

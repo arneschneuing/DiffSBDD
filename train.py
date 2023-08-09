@@ -85,13 +85,14 @@ if __name__ == "__main__":
         loss_params=args.loss_params,
         mode=args.mode,
         node_histogram=histogram,
-        pocket_representation=args.pocket_representation
+        pocket_representation=args.pocket_representation,
+        virtual_nodes=args.virtual_nodes
     )
 
     logger = pl.loggers.WandbLogger(
         save_dir=args.logdir,
         project='ligand-pocket-ddpm',
-        group=args.dataset,
+        group=args.wandb_params.group,
         name=args.run_name,
         id=args.run_name,
         resume='must' if args.resume is not None else False,
@@ -103,7 +104,6 @@ if __name__ == "__main__":
         dirpath=Path(out_dir, 'checkpoints'),
         filename="best-model-epoch={epoch:02d}",
         monitor="loss/val",
-        # auto_insert_metric_name=False,
         save_top_k=1,
         save_last=True,
         mode="min",
@@ -120,6 +120,3 @@ if __name__ == "__main__":
     )
 
     trainer.fit(model=pl_module, ckpt_path=ckpt_path)
-
-    # # run test set
-    # result = trainer.test(ckpt_path='best')
