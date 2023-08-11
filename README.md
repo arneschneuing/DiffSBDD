@@ -11,8 +11,10 @@ Official implementation of **DiffSBDD**, an equivariant model for structure-base
    1. [Conda environment](#conda-environment)
    2. [QuickVina 2](#quickvina-2)
    3. [Pre-trained models](#pre-trained-models)
-2. [CrossDocked Benchmark](#crossdocked-benchmark)
-3. [Binding MOAD](#binding-moad)
+2. [Benchmarks](#benchmarks)
+   1. [CrossDocked Benchmark](#crossdocked)
+   2. [Binding MOAD](#binding-moad)
+   3. [Sampled molecules](#sampled-molecules)
 4. [Training](#training)
 5. [Inference](#inference)
    1. [Sample molecules for a given pocket](#sample-molecules-for-a-given-pocket)
@@ -77,9 +79,10 @@ Pre-trained models can be downloaded from [Zenodo](https://zenodo.org/record/818
 - [Binding MOAD, conditional full-atom model](https://zenodo.org/record/8183747/files/moad_fullatom_cond.ckpt?download=1)
 - [Binding MOAD, joint full-atom model](https://zenodo.org/record/8183747/files/moad_fullatom_joint.ckpt?download=1)
 
-## CrossDocked Benchmark
+## Benchmarks
+### CrossDocked
 
-### Data preparation
+#### Data preparation
 Download and extract the dataset as described by the authors of Pocket2Mol: https://github.com/pengxingang/Pocket2Mol/tree/main/data
 
 Process the raw data using
@@ -87,8 +90,8 @@ Process the raw data using
 python process_crossdock.py <crossdocked_dir> --no_H
 ```
 
-## Binding MOAD
-### Data preparation
+### Binding MOAD
+#### Data preparation
 Download the dataset
 ```bash
 wget http://www.bindingmoad.org/files/biou/every_part_a.zip
@@ -103,6 +106,9 @@ Process the raw data using
 python -W ignore process_bindingmoad.py <bindingmoad_dir>
 ```
 Add the `--ca_only` flag to create a dataset with $C_\alpha$ pocket representation.
+
+### Sampled molecules
+Sampled molecules can be found on [Zenodo](https://zenodo.org/record/8239058).
 
 ## Training
 Starting a new training run:
