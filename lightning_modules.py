@@ -762,7 +762,9 @@ class LigandPocketDDPM(pl.LightningModule):
             n_samples: number of samples
             pocket_ids: list of pocket residues in <chain>:<resi> format
             ref_ligand: alternative way of defining the pocket based on a
-                reference ligand given in <chain>:<resi> format
+                reference ligand given in <chain>:<resi> format if the ligand is
+                contained in the PDB file, or path to an SDF file that
+                contains the ligand
             num_nodes_lig: number of ligand nodes for each sample (list of
                 integers), sampled randomly if 'None'
             sanitize: whether to sanitize molecules or not

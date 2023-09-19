@@ -100,11 +100,19 @@ def get_residue_with_resi(pdb_chain, resi):
     return res[0]
 
 
-def get_pocket_from_ligand(pdb_model, ligand_id, dist_cutoff=8.0):
-    chain, resi = ligand_id.split(':')
-    ligand = get_residue_with_resi(pdb_model[chain], int(resi))
-    ligand_coords = torch.from_numpy(
-        np.array([a.get_coord() for a in ligand.get_atoms()]))
+def get_pocket_from_ligand(pdb_model, ligand, dist_cutoff=8.0):
+
+    if ligand.endswith(".sdf"):
+        # ligand as sdf file
+        rdmol = Chem.SDMolSupplier(str(ligand))[0]
+        ligand_coords = torch.from_numpy(rdmol.GetConformer().GetPositions()).float()
+        resi = None
+    else:
+        # ligand contained in PDB; given in <chain>:<resi> format
+        chain, resi = ligand.split(':')
+        ligand = get_residue_with_resi(pdb_model[chain], int(resi))
+        ligand_coords = torch.from_numpy(
+            np.array([a.get_coord() for a in ligand.get_atoms()]))
 
     pocket_residues = []
     for residue in pdb_model.get_residues():

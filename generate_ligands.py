@@ -15,6 +15,7 @@ if __name__ == "__main__":
     parser.add_argument('--ref_ligand', type=str, default=None)
     parser.add_argument('--outdir', type=Path)
     parser.add_argument('--n_samples', type=int, default=20)
+    parser.add_argument('--batch_size', type=int, default=None)
     parser.add_argument('--num_nodes_lig', type=int, default=None)
     parser.add_argument('--all_frags', action='store_true')
     parser.add_argument('--sanitize', action='store_true')
@@ -28,6 +29,10 @@ if __name__ == "__main__":
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+    if args.batch_size is None:
+        args.batch_size = args.n_samples
+    assert args.n_samples % args.batch_size == 0
+
     # Load model
     model = LigandPocketDDPM.load_from_checkpoint(
         args.checkpoint, map_location=device)
@@ -39,12 +44,15 @@ if __name__ == "__main__":
     else:
         num_nodes_lig = None
 
-    molecules = model.generate_ligands(
-        args.pdbfile, args.n_samples, args.resi_list, args.ref_ligand,
-        num_nodes_lig, args.sanitize, largest_frag=not args.all_frags,
-        relax_iter=(200 if args.relax else 0),
-        resamplings=args.resamplings, jump_length=args.jump_length,
-        timesteps=args.timesteps)
+    molecules = []
+    for i in range(args.n_samples // args.batch_size):
+        molecules_batch = model.generate_ligands(
+            args.pdbfile, args.batch_size, args.resi_list, args.ref_ligand,
+            num_nodes_lig, args.sanitize, largest_frag=not args.all_frags,
+            relax_iter=(200 if args.relax else 0),
+            resamplings=args.resamplings, jump_length=args.jump_length,
+            timesteps=args.timesteps)
+        molecules.extend(molecules_batch)
 
     # Make SDF files
     utils.write_sdf_file(Path(args.outdir, f'{pdb_id}_mol.sdf'), molecules)
