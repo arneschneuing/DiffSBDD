@@ -592,9 +592,9 @@ class ConditionalDDPM(EnVariationalDiffusion):
                                           pocket['mask'], dim=0)
                 xh_ligand[:, :self.n_dims] = \
                     ligand['x'] + (com_pocket - com_pocket_0)[ligand['mask']]
-                z_lig_known = self.noised_representation(
+                z_lig_known, xh_pocket, _ = self.noised_representation(
                     xh_ligand, xh_pocket, ligand['mask'], pocket['mask'],
-                    gamma_s)[0]
+                    gamma_s)
 
                 # move center of mass of the noised part to the center of mass
                 # of the corresponding denoised part before combining them
@@ -605,21 +605,18 @@ class ConditionalDDPM(EnVariationalDiffusion):
                 com_denoised = scatter_mean(
                     z_lig_unknown[lig_fixed.bool().view(-1)][:, :self.n_dims],
                     ligand['mask'][lig_fixed.bool().view(-1)], dim=0)
-                z_lig_known[:, :self.n_dims] = z_lig_known[:, :self.n_dims] + \
-                                               (com_denoised - com_noised)[
-                                                   ligand['mask']]
+                dx = com_denoised - com_noised
+                z_lig_known[:, :self.n_dims] = z_lig_known[:, :self.n_dims] + dx[ligand['mask']]
+                xh_pocket[:, :self.n_dims] = xh_pocket[:, :self.n_dims] + dx[pocket['mask']]
 
                 # combine
                 z_lig = z_lig_known * lig_fixed + z_lig_unknown * (
                             1 - lig_fixed)
 
-                # if s == 0:  # don't resample in last time step
-                #     break
-
                 if u < resamplings - 1:
                     # Noise the sample
-                    z_lig, _ = self.sample_p_zt_given_zs(
-                        z_lig, xh0_pocket, ligand['mask'], pocket['mask'],
+                    z_lig, xh_pocket = self.sample_p_zt_given_zs(
+                        z_lig, xh_pocket, ligand['mask'], pocket['mask'],
                         gamma_t, gamma_s)
 
                 # save frame at the end of a resampling cycle
