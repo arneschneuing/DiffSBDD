@@ -1,0 +1,77 @@
+CFF
+  ModelServer 0.9.11
+
+ 14 15  0  0  0  0  0  0  0  0  0
+    9.1740  -33.1560  -31.8810 N   0  0  0  0  0  0  0  0  0  0  0  0
+    9.5110  -33.9730  -32.9480 C   0  0  0  0  0  0  0  0  0  0  0  0
+   10.1800  -32.7900  -30.8620 C   0  0  0  0  0  0  0  0  0  0  0  0
+    7.8800  -32.6980  -31.7480 C   0  0  0  0  0  0  0  0  0  0  0  0
+    8.5600  -34.3290  -33.8820 N   0  0  0  0  0  0  0  0  0  0  0  0
+   10.7810  -34.4320  -33.0790 O   0  0  0  0  0  0  0  0  0  0  0  0
+    8.9230  -35.2040  -35.0040 C   0  0  0  0  0  0  0  0  0  0  0  0
+    7.2870  -33.8640  -33.7350 C   0  0  0  0  0  0  0  0  0  0  0  0
+    6.9250  -33.0680  -32.6990 C   0  0  0  0  0  0  0  0  0  0  0  0
+    6.2400  -34.1120  -34.5500 N   0  0  0  0  0  0  0  0  0  0  0  0
+    7.5520  -31.9080  -30.7050 O   0  0  0  0  0  0  0  0  0  0  0  0
+    5.6170  -32.7750  -32.8280 N   0  0  0  0  0  0  0  0  0  0  0  0
+    5.2350  -33.4220  -33.9540 C   0  0  0  0  0  0  0  0  0  0  0  0
+    4.7270  -31.9750  -31.9940 C   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  1  0  0  0  0
+  1  3  1  0  0  0  0
+  1  4  1  0  0  0  0
+  2  5  1  0  0  0  0
+  2  6  2  0  0  0  0
+  4  9  1  0  0  0  0
+  4 11  2  0  0  0  0
+  5  7  1  0  0  0  0
+  5  8  1  0  0  0  0
+  8  9  2  0  0  0  0
+  8 10  1  0  0  0  0
+  9 12  1  0  0  0  0
+ 10 13  2  0  0  0  0
+ 12 13  1  0  0  0  0
+ 12 14  1  0  0  0  0
+M  END
+> <model_server_result.job_id>
+yPgH9SanFvk0wz61gS-2-A
+
+> <model_server_result.datetime_utc>
+2024-06-19 19:43:15
+
+> <model_server_result.server_version>
+0.9.11
+
+> <model_server_result.query_name>
+ligand
+
+> <model_server_result.source_id>
+pdb-bcif
+
+> <model_server_result.entry_id>
+3rfm
+
+> <model_server_params.name>
+atom_site
+
+> <model_server_params.value>
+{"label_asym_id":"B","auth_seq_id":330}
+
+> <model_server_stats.io_time_ms>
+58
+
+> <model_server_stats.parse_time_ms>
+37
+
+> <model_server_stats.create_model_time_ms>
+3
+
+> <model_server_stats.query_time_ms>
+262
+
+> <model_server_stats.encode_time_ms>
+0
+
+> <model_server_stats.element_count>
+14
+
+$$$$

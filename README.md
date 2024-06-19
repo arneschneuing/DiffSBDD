@@ -9,9 +9,11 @@ Official implementation of **DiffSBDD**, an equivariant model for structure-base
 
 1. [Dependencies](#dependencies)
    1. [Conda environment](#conda-environment)
-   2. [QuickVina 2](#quickvina-2)
    3. [Pre-trained models](#pre-trained-models)
-2. [Benchmarks](#benchmarks)
+2. [Step-by-step examples](#step-by-step-examples)
+   1. [De novo design](#de-novo-design)
+   2. [Substructure inpainting](#substructure-inpainting)
+3. [Benchmarks](#benchmarks)
    1. [CrossDocked Benchmark](#crossdocked)
    2. [Binding MOAD](#binding-moad)
    3. [Sampled molecules](#sampled-molecules)
@@ -21,7 +23,6 @@ Official implementation of **DiffSBDD**, an equivariant model for structure-base
    2. [Test set sampling](#sample-molecules-for-all-pockets-in-the-test-set)
    3. [Fix substructures](#fix-substructures)
    4. [Metrics](#metrics)
-   5. [QuickVina2](#quickvina2)
 6. [Citation](#citation)
 
 ## Dependencies
@@ -56,18 +57,6 @@ The code was tested with the following versions
 | PyTorch Scatter   | 2.0.9     |
 | OpenBabel         | 3.1.1     |
 
-### QuickVina 2
-For docking, install QuickVina 2:
-```bash
-wget https://github.com/QVina/qvina/raw/master/bin/qvina2.1
-chmod +x qvina2.1 
-```
-
-We need MGLTools for preparing the receptor for docking (pdb -> pdbqt) but it can mess up your conda environment, so I recommend to make a new one:
-```bash
-conda create -n mgltools -c bioconda mgltools
-```
-
 ### Pre-trained models
 Pre-trained models can be downloaded from [Zenodo](https://zenodo.org/record/8183747).
 - [CrossDocked, conditional $`C_\alpha`$ model](https://zenodo.org/record/8183747/files/crossdocked_ca_cond.ckpt?download=1)
@@ -78,6 +67,47 @@ Pre-trained models can be downloaded from [Zenodo](https://zenodo.org/record/818
 - [Binding MOAD, joint $`C_\alpha`$ model](https://zenodo.org/record/8183747/files/moad_ca_joint.ckpt?download=1)
 - [Binding MOAD, conditional full-atom model](https://zenodo.org/record/8183747/files/moad_fullatom_cond.ckpt?download=1)
 - [Binding MOAD, joint full-atom model](https://zenodo.org/record/8183747/files/moad_fullatom_joint.ckpt?download=1)
+
+## Step-by-step examples
+
+These simple step-by-step examples provide an easy entry point to generating molecules with DiffSBDD.
+More details about training and sampling scripts are provided below.
+
+Before we run the sampling scripts we need to download a model checkpoint:
+```bash
+wget -P checkpoints/ https://zenodo.org/record/8183747/files/crossdocked_fullatom_cond.ckpt
+```
+It will be stored in the `./checkpoints` folder.
+
+### De novo design
+
+Using the trained model weights, we can sample new ligands with a single command. In this example, we use the protein with PDB ID `3RFM` that can be found in the example folder.
+The PDB file contains a reference ligand in chain A at residue number 330 that we can use to specify the designated binding pocket.
+The following command will generate 20 samples and save them in a file called `3rfm_mol.sdf` in the `./example` folder. 
+```bash
+python generate_ligands.py checkpoints/crossdocked_fullatom_cond.ckpt --pdbfile example/3rfm.pdb --outfile example/3rfm_mol.sdf --ref_ligand A:330 --n_samples 20
+```
+Instead of specifying the chain and residue number we can also provide an SDF file with the reference ligand:
+```bash
+python generate_ligands.py checkpoints/crossdocked_fullatom_cond.ckpt --pdbfile example/3rfm.pdb --outfile example/3rfm_mol.sdf --ref_ligand example/3rfm_B_CFF.sdf --n_samples 20
+```
+If no reference ligand is known, the binding pocket can also be specified as a list of residues as described [below](#sample-molecules-for-a-given-pocket).
+
+### Substructure inpainting
+
+To design molecules around fixed substructures (scaffold elaboration, fragment linking etc.) you can run the `inpaint.py` script.
+Here, we demonstrate its usage with a fragment linking example. Similar to `generate_ligands.py`, the inpainting script allows us to define pockets based on a reference ligand in SDF format
+or with a chain and residue identifier (if it is in the PDB).
+The easiest way to fix substructures is to provide them in a separate SDF file using the `--fix_atoms` flag.
+However, the script also accepts a list of atom names which must correspond to the atoms of the reference ligand in the PDB file, e.g. `--fix_atoms C1 N6 C5 C12`.
+```bash 
+python inpaint.py checkpoints/crossdocked_fullatom_cond.ckpt --pdbfile example/5ndu.pdb --outfile example/5ndu_linked_mols.sdf --ref_ligand example/5ndu_C_8V2.sdf --fix_atoms example/fragments.sdf --center ligand --add_n_nodes 10
+```
+Note that the `--center ligand` option tells DiffSBDD to sample the additional atoms near the center of mass of the fixed substructure, which is not always ideal or desired.
+For instance, the inputs could be two fragments with very different sizes, in which case the random noise will be sampled very close to the larger fragment.
+We currently also support sampling in the pocket center (`--center pocket`) but in some cases neither of these two options might be suitable and a problem-specific solution is warranted to avoid bad results.  
+
+Another important parameter is `--add_n_nodes` which determines how many new atoms will be added. If it is not provided, a random number will be sampled.
 
 ## Benchmarks
 ### CrossDocked
@@ -126,15 +156,19 @@ python -u train.py --config <config>.yml --resume <checkpoint>.ckpt
 ### Sample molecules for a given pocket
 To sample small molecules for a given pocket with a trained model use the following command:
 ```bash
-python generate_ligands.py <checkpoint>.ckpt --pdbfile <pdb_file>.pdb --outdir <output_dir> --resi_list <list_of_pocket_residue_ids>
+python generate_ligands.py <checkpoint>.ckpt --pdbfile <pdb_file>.pdb --outfile <output_file> --resi_list <list_of_pocket_residue_ids>
 ```
 For example:
 ```bash
-python generate_ligands.py last.ckpt --pdbfile 1abc.pdb --outdir results/ --resi_list A:1 A:2 A:3 A:4 A:5 A:6 A:7 
+python generate_ligands.py last.ckpt --pdbfile 1abc.pdb --outfile results/1abc_mols.sdf --resi_list A:1 A:2 A:3 A:4 A:5 A:6 A:7 
 ```
 Alternatively, the binding pocket can also be specified based on a reference ligand in the same PDB file:
 ```bash 
-python generate_ligands.py <checkpoint>.ckpt --pdbfile <pdb_file>.pdb --outdir <output_dir> --ref_ligand <chain>:<resi>
+python generate_ligands.py <checkpoint>.ckpt --pdbfile <pdb_file>.pdb --outfile <output_file> --ref_ligand <chain>:<resi>
+```
+or with a separate SDF file:
+```bash 
+python generate_ligands.py <checkpoint>.ckpt --pdbfile <pdb_file>.pdb --outfile <output_file> --ref_ligand <ref_ligand>.sdf
 ```
 
 Optional flags:
@@ -145,7 +179,7 @@ Optional flags:
 | `--timesteps` | Number of denoising steps for inference |
 | `--all_frags` | Keep all disconnected fragments |
 | `--sanitize` | Sanitize molecules (invalid molecules will be removed if this flag is present) |
-| `--relax` | Relax generated structure in force field |
+| `--relax` | Relax generated structure in force field (does not consider the protein and might introduce clashes) |
 | `--resamplings` | Inpainting parameter (doesn't apply if conditional model is used) |
 | `--jump_length` | Inpainting parameter (doesn't apply if conditional model is used) |
 
@@ -159,14 +193,14 @@ There are different ways to determine the size of sampled molecules.
 - `--n_nodes_bias <int>`: samples the number of nodes randomly and adds this bias
 - `--n_nodes_min <int>`: samples the number of nodes randomly but clamps it at this value
 
-Other optional flags are equivalent to `generate_ligands.py`. 
+Other optional flags are analogous to `generate_ligands.py`. 
 
 ### Fix substructures
 `inpaint.py` can be used for partial ligand redesign with the conditionally trained model, e.g.:
 ```bash 
-python inpaint.py <checkpoint>.ckpt --pdbfile <pdb_file>.pdb --outdir <output_dir> --ref_ligand <chain>:<resi> --fix_atoms C1 N6 C5 C12
+python inpaint.py <checkpoint>.ckpt --pdbfile <pdb_file>.pdb --outfile <output_file> --ref_ligand <chain>:<resi> --fix_atoms C1 N6 C5 C12
 ```
-`--add_n_nodes` controls the number of newly generated nodes
+`--add_n_nodes` controls the number of newly generated nodes. Other options are the same as before.
 
 ### Metrics
 For assessing basic molecular properties create an instance of the `MoleculeProperties` class and run its `evaluate` method:
@@ -177,23 +211,6 @@ all_qed, all_sa, all_logp, all_lipinski, per_pocket_diversity = \
     mol_metrics.evaluate(pocket_mols)
 ```
 `evaluate()` expects a list of lists where the inner list contains all RDKit molecules generated for one pocket.
-
-For computing docking scores, run QuickVina as described below. 
-
-### QuickVina2
-First, convert all protein PDB files to PDBQT files using MGLTools
-```bash
-conda activate mgltools
-cd analysis
-python docking_py27.py <bindingmoad_dir>/processed_noH/test/ <output_dir> bindingmoad
-cd ..
-conda deactivate
-```
-Then, compute QuickVina scores:
-```bash
-conda activate sbdd-env
-python analysis/docking.py --pdbqt_dir <docking_py27_outdir> --sdf_dir <test_outdir> --out_dir <qvina_outdir> --write_csv --write_dict
-```
 
 ## Citation
 ```

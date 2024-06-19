@@ -2,6 +2,8 @@ import argparse
 from pathlib import Path
 
 import torch
+from openbabel import openbabel
+openbabel.obErrorLog.StopLogging()  # suppress OpenBabel messages
 
 import utils
 from lightning_modules import LigandPocketDDPM
@@ -13,7 +15,7 @@ if __name__ == "__main__":
     parser.add_argument('--pdbfile', type=str)
     parser.add_argument('--resi_list', type=str, nargs='+', default=None)
     parser.add_argument('--ref_ligand', type=str, default=None)
-    parser.add_argument('--outdir', type=Path)
+    parser.add_argument('--outfile', type=Path)
     parser.add_argument('--n_samples', type=int, default=20)
     parser.add_argument('--batch_size', type=int, default=None)
     parser.add_argument('--num_nodes_lig', type=int, default=None)
@@ -55,4 +57,4 @@ if __name__ == "__main__":
         molecules.extend(molecules_batch)
 
     # Make SDF files
-    utils.write_sdf_file(Path(args.outdir, f'{pdb_id}_mol.sdf'), molecules)
+    utils.write_sdf_file(args.outfile, molecules)

@@ -5,7 +5,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from Bio.PDB import PDBParser
+from rdkit import Chem
 from torch_scatter import scatter_mean
+from openbabel import openbabel
+openbabel.obErrorLog.StopLogging()  # suppress OpenBabel messages
 
 import utils
 from lightning_modules import LigandPocketDDPM
@@ -13,13 +16,46 @@ from constants import FLOAT_TYPE, INT_TYPE
 from analysis.molecule_builder import build_molecule, process_molecule
 
 
-def prepare_ligand(biopython_atoms, atom_encoder):
+def prepare_from_sdf_files(sdf_files, atom_encoder):
+
+    ligand_coords = []
+    atom_one_hot = []
+    for file in sdf_files:
+        rdmol = Chem.SDMolSupplier(str(file), sanitize=False)[0]
+        ligand_coords.append(
+            torch.from_numpy(rdmol.GetConformer().GetPositions()).float()
+        )
+        types = torch.tensor([atom_encoder[a.GetSymbol()] for a in rdmol.GetAtoms()])
+        atom_one_hot.append(
+            F.one_hot(types, num_classes=len(atom_encoder))
+        )
+
+    return torch.cat(ligand_coords, dim=0), torch.cat(atom_one_hot, dim=0)
+
+
+def prepare_ligand_from_pdb(biopython_atoms, atom_encoder):
 
     coord = torch.tensor(np.array([a.get_coord()
                                    for a in biopython_atoms]), dtype=FLOAT_TYPE)
     types = torch.tensor([atom_encoder[a.element.capitalize()]
                           for a in biopython_atoms])
     one_hot = F.one_hot(types, num_classes=len(atom_encoder))
+
+    return coord, one_hot
+
+
+def prepare_substructure(ref_ligand, fix_atoms, pdb_model):
+
+    if fix_atoms[0].endswith(".sdf"):
+        # ligand as sdf file
+        coord, one_hot = prepare_from_sdf_files(fix_atoms, model.lig_type_encoder)
+
+    else:
+        # ligand contained in PDB; given in <chain>:<resi> format
+        chain, resi = ref_ligand.split(':')
+        ligand = utils.get_residue_with_resi(pdb_model[chain], int(resi))
+        fixed_atoms = [a for a in ligand.get_atoms() if a.get_name() in set(fix_atoms)]
+        coord, one_hot = prepare_ligand_from_pdb(fixed_atoms, model.lig_type_encoder)
 
     return coord, one_hot
 
@@ -34,7 +70,9 @@ def inpaint_ligand(model, pdb_file, n_samples, ligand, fix_atoms,
         model: Lightning model
         pdb_file: PDB filename
         n_samples: number of samples
-        ligand: reference ligand given in <chain>:<resi> format
+        ligand: reference ligand given in <chain>:<resi> format if the ligand is
+                contained in the PDB file, or path to an SDF file that
+                contains the ligand; used to define the pocket
         fix_atoms: ligand atoms that should be fixed, e.g. "C1 N6 C5 C12"
         center: 'ligand' or 'pocket'
         add_n_nodes: number of ligand nodes to add, sampled randomly if 'None'
@@ -62,12 +100,9 @@ def inpaint_ligand(model, pdb_file, n_samples, ligand, fix_atoms,
     residues = utils.get_pocket_from_ligand(pdb_model, ligand)
     pocket = model.prepare_pocket(residues, repeats=n_samples)
 
-    # Get ligand
-    chain, resi = ligand.split(':')
-    ligand = utils.get_residue_with_resi(pdb_model[chain], int(resi))
-    fixed_atoms = [a for a in ligand.get_atoms() if a.get_name() in set(fix_atoms)]
-    n_fixed = len(fixed_atoms)
-    x_fixed, one_hot_fixed = prepare_ligand(fixed_atoms, model.lig_type_encoder)
+    # Get fixed ligand substructure
+    x_fixed, one_hot_fixed = prepare_substructure(ligand, fix_atoms, pdb_model)
+    n_fixed = len(x_fixed)
 
     if add_n_nodes is None:
         num_nodes_lig = model.ddpm.size_distribution.sample_conditional(
@@ -118,10 +153,6 @@ def inpaint_ligand(model, pdb_file, n_samples, ligand, fix_atoms,
         xh_lig = utils.reverse_tensor(xh_lig)
         xh_pocket = utils.reverse_tensor(xh_pocket)
 
-        # # Repeat last frame to see final sample better.
-        # xh_lig = torch.cat([xh_lig, xh_lig[-1:].repeat(10, 1, 1)], dim=0)
-        # xh_pocket = torch.cat([xh_pocket, xh_pocket[-1:].repeat(10, 1, 1)], dim=0)
-
         lig_mask = torch.arange(xh_lig.size(0), device=model.device
                                 ).repeat_interleave(len(lig_mask))
         pocket_mask = torch.arange(xh_pocket.size(0), device=model.device
@@ -165,13 +196,13 @@ if __name__ == "__main__":
     parser.add_argument('--pdbfile', type=str)
     parser.add_argument('--ref_ligand', type=str, default=None)
     parser.add_argument('--fix_atoms', type=str, nargs='+', default=None)
+    parser.add_argument('--center', type=str, default='ligand', choices={'ligand', 'pocket'})
     parser.add_argument('--outfile', type=Path)
     parser.add_argument('--n_samples', type=int, default=20)
     parser.add_argument('--add_n_nodes', type=int, default=None)
-    parser.add_argument('--all_frags', action='store_true')
-    parser.add_argument('--relax', type=int, default=0)
-    parser.add_argument('--raw', action='store_true')
-    parser.add_argument('--resamplings', type=int, default=10)
+    parser.add_argument('--relax', action='store_true')
+    parser.add_argument('--sanitize', action='store_true')
+    parser.add_argument('--resamplings', type=int, default=20)
     parser.add_argument('--timesteps', type=int, default=50)
     parser.add_argument('--save_traj', action='store_true')
     args = parser.parse_args()
@@ -187,10 +218,10 @@ if __name__ == "__main__":
 
     molecules = inpaint_ligand(model, args.pdbfile, args.n_samples,
                                args.ref_ligand, args.fix_atoms,
-                               args.add_n_nodes, center='pocket',
-                               sanitize=not args.raw,
-                               largest_frag=not args.all_frags,
-                               relax_iter=args.relax,
+                               args.add_n_nodes, center=args.center,
+                               sanitize=args.sanitize,
+                               largest_frag=False,
+                               relax_iter=(200 if args.relax else 0),
                                timesteps=args.timesteps,
                                resamplings=args.resamplings,
                                save_traj=args.save_traj)
