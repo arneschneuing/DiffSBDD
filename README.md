@@ -109,6 +109,24 @@ We currently also support sampling in the pocket center (`--center pocket`) but 
 
 Another important parameter is `--add_n_nodes` which determines how many new atoms will be added. If it is not provided, a random number will be sampled.
 
+### Molecular optimization
+
+You can use DiffSBDD to optimize exhisting molecules for given properties via the `optimize.py` script.
+
+```bash 
+python optimize.py checkpoints/crossdocked_fullatom_cond.ckpt --pdbfile example/5ndu.pdb --outfile output.sdf --ref_ligand example/5ndu_C_8V2.sdf --objective sa --population_size 100 --evolution_steps 10 --top_k 10 --timesteps 100
+```
+
+Important parameters in the evolutionary algorithum are:
+- `--objective`: The optimization objective. Currently supports 'qed' for Quantitative Estimate of Drug-likeness and 'sa' for Synthetic Accessibility. Custom objectives can be implemented within the code.
+- `--population_size`: The size of the molecule population to maintain across the optimization generations.
+- `--evolution_steps`: The number of evolutionary steps (generations) to perform during the optimization process.
+- `--top_k`: The number of top-scoring molecules to select from one generation to the next.
+- `--timesteps`: The number of noise-denoise steps to use in the optimization algorithum. Defaults to 100 (out of T=500).
+
+
+
+
 ## Benchmarks
 ### CrossDocked
 

@@ -333,8 +333,6 @@ class ConditionalDDPM(EnVariationalDiffusion):
         """
         Partially noises a ligand to be later denoised.
         """
-        # Normalize data, take into account volume change in x.
-        ligand, pocket = self.normalize(ligand, pocket)
 
         # Inflate timestep into an array
         t_int = torch.ones(size=(ligand['size'].size(0), 1),
@@ -362,6 +360,65 @@ class ConditionalDDPM(EnVariationalDiffusion):
                                        pocket['mask'], gamma_t)
             
         return z_t_lig, xh_pocket, eps_t_lig
+
+    def diversify(self, ligand, pocket, noising_steps):
+        """
+        Diversifies a set of ligands via noise-denoising
+        """
+
+        # Normalize data, take into account volume change in x.
+        ligand, pocket = self.normalize(ligand, pocket)
+
+        z_lig, xh_pocket, _ = self.partially_noised_ligand(ligand, pocket, noising_steps)
+
+        timesteps = self.T
+        n_samples = len(pocket['size'])
+        device = pocket['x'].device
+
+        # xh0_pocket is the original pocket while xh_pocket might be a
+        # translated version of it
+        xh0_pocket = torch.cat([pocket['x'], pocket['one_hot']], dim=1)
+
+        #lig_mask = utils.num_nodes_to_batch_mask(
+        #    n_samples, num_nodes_lig, device)
+        lig_mask = ligand['mask']
+
+        # # Sample from Normal distribution in the pocket center
+        # mu_lig_x = scatter_mean(pocket['x'], pocket['mask'], dim=0)
+        # mu_lig_h = torch.zeros((n_samples, self.atom_nf), device=device)
+        # mu_lig = torch.cat((mu_lig_x, mu_lig_h), dim=1)[lig_mask]
+        # sigma = torch.ones_like(pocket['size']).unsqueeze(1)
+
+        # z_lig, xh_pocket = self.sample_normal_zero_com(
+        #     mu_lig, xh0_pocket, sigma, lig_mask, pocket['mask'])
+
+        self.assert_mean_zero_with_mask(z_lig[:, :self.n_dims], lig_mask)
+
+        # Iteratively sample p(z_s | z_t) for t = 1, ..., T, with s = t - 1.
+
+        for s in reversed(range(0, noising_steps)):
+            s_array = torch.full((n_samples, 1), fill_value=s,
+                                 device=z_lig.device)
+            t_array = s_array + 1
+            s_array = s_array / timesteps
+            t_array = t_array / timesteps
+
+            z_lig, xh_pocket = self.sample_p_zs_given_zt(
+                s_array, t_array, z_lig.detach(), xh_pocket.detach(), lig_mask, pocket['mask'])
+
+        # Finally sample p(x, h | z_0).
+        x_lig, h_lig, x_pocket, h_pocket = self.sample_p_xh_given_z0(
+            z_lig, xh_pocket, lig_mask, pocket['mask'], n_samples)
+
+        self.assert_mean_zero_with_mask(x_lig, lig_mask)
+
+        # Overwrite last frame with the resulting x and h.
+        out_lig = torch.cat([x_lig, h_lig], dim=1)
+        out_pocket = torch.cat([x_pocket, h_pocket], dim=1)
+
+        # remove frame dimension if only the final molecule is returned
+        return out_lig, out_pocket, lig_mask, pocket['mask']
+
 
     def xh_given_zt_and_epsilon(self, z_t, epsilon, gamma_t, batch_mask):
         """ Equation (7) in the EDM paper """
