@@ -13,6 +13,7 @@ Official implementation of **DiffSBDD**, an equivariant model for structure-base
 2. [Step-by-step examples](#step-by-step-examples)
    1. [De novo design](#de-novo-design)
    2. [Substructure inpainting](#substructure-inpainting)
+   3. [Molecular optimization](#molecular-optimization)
 3. [Benchmarks](#benchmarks)
    1. [CrossDocked Benchmark](#crossdocked)
    2. [Binding MOAD](#binding-moad)
@@ -111,7 +112,7 @@ Another important parameter is `--add_n_nodes` which determines how many new ato
 
 ### Molecular optimization
 
-You can use DiffSBDD to optimize exhisting molecules for given properties via the `optimize.py` script.
+You can use DiffSBDD to optimize existing molecules for given properties via the `optimize.py` script.
 
 ```bash 
 python optimize.py checkpoints/crossdocked_fullatom_cond.ckpt --pdbfile example/5ndu.pdb --outfile output.sdf --ref_ligand example/5ndu_C_8V2.sdf --objective sa --population_size 100 --evolution_steps 10 --top_k 10 --timesteps 100
