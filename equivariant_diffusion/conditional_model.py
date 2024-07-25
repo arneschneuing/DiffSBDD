@@ -379,18 +379,7 @@ class ConditionalDDPM(EnVariationalDiffusion):
         # translated version of it
         xh0_pocket = torch.cat([pocket['x'], pocket['one_hot']], dim=1)
 
-        #lig_mask = utils.num_nodes_to_batch_mask(
-        #    n_samples, num_nodes_lig, device)
         lig_mask = ligand['mask']
-
-        # # Sample from Normal distribution in the pocket center
-        # mu_lig_x = scatter_mean(pocket['x'], pocket['mask'], dim=0)
-        # mu_lig_h = torch.zeros((n_samples, self.atom_nf), device=device)
-        # mu_lig = torch.cat((mu_lig_x, mu_lig_h), dim=1)[lig_mask]
-        # sigma = torch.ones_like(pocket['size']).unsqueeze(1)
-
-        # z_lig, xh_pocket = self.sample_normal_zero_com(
-        #     mu_lig, xh0_pocket, sigma, lig_mask, pocket['mask'])
 
         self.assert_mean_zero_with_mask(z_lig[:, :self.n_dims], lig_mask)
 
