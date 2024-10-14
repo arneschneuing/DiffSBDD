@@ -126,6 +126,13 @@ def compute_smiles(positions, one_hot, mask):
                 total=len(np.unique(mask)))
     for i, (pos, atom_type) in pbar:
         mol = build_molecule(pos, atom_type, dataset_info)
+
+        # BasicMolecularMetrics() computes SMILES after sanitization
+        try:
+            Chem.SanitizeMol(mol)
+        except ValueError:
+            continue
+
         mol = rdmol_to_smiles(mol)
         if mol is not None:
             mols_smiles.append(mol)
@@ -425,18 +432,6 @@ if __name__ == '__main__':
     summary_string += f"'atom_hist': {atom_hist}\n"
     summary_string += f"'aa_hist': {aa_hist}\n"
     summary_string += f"'n_nodes': {n_nodes.tolist()}\n"
-
-    sns.distplot(count_protein)
-    plt.savefig(processed_dir / 'protein_size_distribution.png')
-    plt.clf()
-
-    sns.distplot(count_ligand)
-    plt.savefig(processed_dir / 'lig_size_distribution.png')
-    plt.clf()
-
-    sns.distplot(count_total)
-    plt.savefig(processed_dir / 'total_size_distribution.png')
-    plt.clf()
 
     # Write summary to text file
     with open(processed_dir / 'summary.txt', 'w') as f:
