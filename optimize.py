@@ -130,6 +130,7 @@ def diversify_ligands(model, pocket, mols, timesteps,
     # Build mol objects
     x = out_lig[:, :model.x_dims].detach().cpu()
     atom_type = out_lig[:, model.x_dims:].argmax(1).detach().cpu()
+    lig_mask=lig_mask.detach().cpu()
 
     molecules = []
     for mol_pc in zip(utils.batch_to_list(x, lig_mask),
@@ -199,7 +200,7 @@ if __name__ == "__main__":
     buffer = pd.DataFrame(columns=['generation', 'score', 'fate' 'mol', 'smiles'])
 
     # Population initialization
-    buffer = buffer.append({'generation': 0,
+    buffer=buffer._append({'generation': 0,
                             'score': objective_function(ref_mol),
                             'fate': 'initial', 'mol': ref_mol,
                             'smiles': Chem.MolToSmiles(ref_mol)}, ignore_index=True)
@@ -235,7 +236,7 @@ if __name__ == "__main__":
         
         # Evaluate and save molecules
         for mol in molecules:
-            buffer = buffer.append({'generation': generation_idx + 1,
+            buffer = buffer._append({'generation': generation_idx + 1,
             'score': objective_function(mol),
             'fate': 'purged',
             'mol': mol,
