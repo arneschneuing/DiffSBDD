@@ -2,6 +2,7 @@
 
 Official implementation of **DiffSBDD**, an equivariant diffusion model for structure-based drug design, by Arne Schneuing, Charles Harris, Yuanqi Du, Kieran Didi, Arian Jamasb, Ilia Igashov, Weitao Du, Carla Gomes, Tom Blundell, Pietro Lio, Max Welling, Michael Bronstein & Bruno Correia.
 
+[![DOI](https://zenodo.org/badge/DOI/10.1038/s43588-024-00737-x.svg)](https://doi.org/10.1038/s43588-024-00737-x)
 [![arXiv](https://img.shields.io/badge/arXiv-2210.13695-B31B1B.svg)](http://arxiv.org/abs/2210.13695)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/arneschneuing/DiffSBDD/blob/main/colab/DiffSBDD.ipynb)
 
@@ -234,10 +235,18 @@ all_qed, all_sa, all_logp, all_lipinski, per_pocket_diversity = \
 
 ## Citation
 ```
-@article{schneuing2022structure,
-  title={Structure-based Drug Design with Equivariant Diffusion Models},
-  author={Schneuing, Arne and Du, Yuanqi and Harris, Charles and Jamasb, Arian and Igashov, Ilia and Du, Weitao and Blundell, Tom and Li{\'o}, Pietro and Gomes, Carla and Welling, Max and Bronstein, Michael and Correia, Bruno},
-  journal={arXiv preprint arXiv:2210.13695},
-  year={2022}
+@article{schneuing2024diffsbdd,
+   title={Structure-based drug design with equivariant diffusion models},
+   author={Schneuing, Arne and Harris, Charles and Du, Yuanqi and Didi, Kieran and Jamasb, Arian and Igashov, Ilia and Du, Weitao and Gomes, Carla and Blundell, Tom L and Lio, Pietro and Welling, Max and Bronstein, Michael and Correia, Bruno},
+   journal={Nature Computational Science},
+   year={2024},
+   month={Dec},
+   day={01},
+   volume={4},
+   number={12},
+   pages={899-909},
+   issn={2662-8457},
+   doi={10.1038/s43588-024-00737-x},
+   url={https://doi.org/10.1038/s43588-024-00737-x}
 }
 ```
