@@ -117,10 +117,11 @@ Another important parameter is `--add_n_nodes` which determines how many new ato
 You can use DiffSBDD to optimize existing molecules for given properties via the `optimize.py` script.
 
 ```bash 
-python optimize.py checkpoints/crossdocked_fullatom_cond.ckpt --pdbfile example/5ndu.pdb --outfile output.sdf --ref_ligand example/5ndu_C_8V2.sdf --objective sa --population_size 100 --evolution_steps 10 --top_k 10 --timesteps 100
+python optimize.py --checkpoint checkpoints/crossdocked_fullatom_cond.ckpt --pdbfile example/5ndu.pdb --outfile output.sdf --ref_ligand example/5ndu_C_8V2.sdf --objective sa --population_size 100 --evolution_steps 10 --top_k 10 --timesteps 100
 ```
 
 Important parameters in the evolutionary algorithum are:
+- `--checkpoint`: The checkpoint to use for the noising-denoising model.
 - `--objective`: The optimization objective. Currently supports 'qed' for Quantitative Estimate of Drug-likeness and 'sa' for Synthetic Accessibility. Custom objectives can be implemented within the code.
 - `--population_size`: The size of the molecule population to maintain across the optimization generations.
 - `--evolution_steps`: The number of evolutionary steps (generations) to perform during the optimization process.
