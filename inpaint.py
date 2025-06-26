@@ -172,6 +172,7 @@ def inpaint_ligand(model, pdb_file, n_samples, ligand, fix_atoms,
     # Build mol objects
     x = xh_lig[:, :model.x_dims].detach().cpu()
     atom_type = xh_lig[:, model.x_dims:].argmax(1).detach().cpu()
+    lig_mask=lig_mask.detach().cpu()
 
     molecules = []
     for mol_pc in zip(utils.batch_to_list(x, lig_mask),

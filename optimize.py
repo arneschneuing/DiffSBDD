@@ -130,6 +130,7 @@ def diversify_ligands(model, pocket, mols, timesteps,
     # Build mol objects
     x = out_lig[:, :model.x_dims].detach().cpu()
     atom_type = out_lig[:, model.x_dims:].argmax(1).detach().cpu()
+    lig_mask=lig_mask.detach().cpu()
 
     molecules = []
     for mol_pc in zip(utils.batch_to_list(x, lig_mask),
@@ -153,7 +154,7 @@ if __name__ == "__main__":
     parser.add_argument('--checkpoint', type=Path, default='checkpoints/crossdocked_fullatom_cond.ckpt')
     parser.add_argument('--pdbfile', type=str, default='example/5ndu.pdb')
     parser.add_argument('--ref_ligand', type=str, default='example/5ndu_linked_mols.sdf')
-    parser.add_argument('--objective', type=str, default='sa', choices={'qed', 'sa'})
+    parser.add_argument('--objective', type=str, default='sa', choices={'qed', 'sa','gnina'})
     parser.add_argument('--timesteps', type=int, default=100)
     parser.add_argument('--population_size', type=int, default=100)
     parser.add_argument('--evolution_steps', type=int, default=10)
@@ -188,18 +189,22 @@ if __name__ == "__main__":
         objective_function = MoleculeProperties().calculate_qed
     elif args.objective == 'sa':
         objective_function = MoleculeProperties().calculate_sa
+    elif args.objective == 'gnina':
+        from analysis.gnina import Gnina
+        objective_function = Gnina(args.pdbfile).affinity
     else:
         ### IMPLEMENT YOUR OWN OBJECTIVE
         ### FUNCTIONS HERE 
         raise ValueError(f"Objective function {args.objective} not recognized.")
 
-    ref_mol = Chem.SDMolSupplier(args.ref_ligand)[0]
+    ref_mols = Chem.SDMolSupplier(args.ref_ligand)
 
     # Store molecules in history dataframe 
     buffer = pd.DataFrame(columns=['generation', 'score', 'fate' 'mol', 'smiles'])
 
     # Population initialization
-    buffer = buffer.append({'generation': 0,
+    for ref_mol in ref_mols:
+        buffer=buffer._append({'generation': 0,
                             'score': objective_function(ref_mol),
                             'fate': 'initial', 'mol': ref_mol,
                             'smiles': Chem.MolToSmiles(ref_mol)}, ignore_index=True)
@@ -207,12 +212,15 @@ if __name__ == "__main__":
     for generation_idx in range(evolution_steps):
 
         if generation_idx == 0:
-            molecules = buffer['mol'].tolist() * population_size
+            top_k_molecules=buffer.sort_values(by='score', ascending=False)['mol'].tolist()[:population_size]
+            molecules = top_k_molecules * ((population_size-1)//len(top_k_molecules)+1)
+            molecules=molecules[:population_size]
         else:
             # Select top k molecules from previous generation
             previous_gen = buffer[buffer['generation'] == generation_idx]
             top_k_molecules = previous_gen.nlargest(top_k, 'score')['mol'].tolist()
-            molecules = top_k_molecules * (population_size // top_k)
+            molecules = top_k_molecules * ((population_size-1)//top_k+1)
+            molecules=molecules[:population_size]
 
             # Update the fate of selected top k molecules in the buffer
             buffer.loc[buffer['generation'] == generation_idx, 'fate'] = 'survived'
@@ -235,7 +243,7 @@ if __name__ == "__main__":
         
         # Evaluate and save molecules
         for mol in molecules:
-            buffer = buffer.append({'generation': generation_idx + 1,
+            buffer = buffer._append({'generation': generation_idx + 1,
             'score': objective_function(mol),
             'fate': 'purged',
             'mol': mol,
